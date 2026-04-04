@@ -283,7 +283,7 @@ process.on('unhandledRejection', (reason) => {
   shutdown();
 });
 
-logger.info('Starting TransAct Wiki MCP Server', { wikiPath: process.env.WIKI_PATH });
+logger.info('Starting Wiki Explorer MCP Server', { wikiPath: process.env.WIKI_PATH });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

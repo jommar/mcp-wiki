@@ -1,6 +1,6 @@
-# TransAct Wiki MCP Server
+# Wiki Explorer MCP Server
 
-An MCP (Model Context Protocol) server that exposes your project wiki to AI assistants, enabling contextual wiki lookups during development sessions.
+A generic MCP (Model Context Protocol) server that exposes any project wiki to AI assistants, enabling contextual wiki lookups during development sessions.
 
 ## Features
 
@@ -29,7 +29,7 @@ npm test
 ### .env
 
 ```env
-WIKI_PATH=../docs/WIKI.md
+WIKI_PATH=path/to/your/WIKI.md
 LOG_LEVEL=info  # debug, info, warn, error
 ```
 
@@ -38,8 +38,9 @@ LOG_LEVEL=info  # debug, info, warn, error
 | Tool | Description | Parameters |
 |---|---|---|
 | `list_wiki` | List all available wiki sections | none |
+| `browse_wiki` | Browse sections by topic/parent | `topic` (string, optional) |
 | `search_wiki` | Search sections by keyword | `query` (string), `fuzzy` (boolean) |
-| `get_wiki_section` | Get a single section's content | `key` (string, lowercase-hyphenated) |
+| `get_wiki_section` | Get a single section's content | `key` (string), `offset` (number), `limit` (number) |
 | `get_wiki_sections` | Get multiple sections at once | `keys` (string[], max 20) |
 
 ## Connecting to AI Assistants
@@ -51,11 +52,11 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 ```json
 {
   "mcpServers": {
-    "transact-wiki": {
+    "wiki-explorer": {
       "command": "node",
-      "args": ["/transAct/mcp/index.js"],
+      "args": ["/path/to/wiki-explorer/index.js"],
       "env": {
-        "WIKI_PATH": "/transAct/docs/WIKI.md"
+        "WIKI_PATH": "/path/to/your/docs/WIKI.md"
       }
     }
   }
@@ -69,11 +70,11 @@ Add to Cursor MCP settings:
 ```json
 {
   "mcpServers": {
-    "transact-wiki": {
+    "wiki-explorer": {
       "command": "node",
-      "args": ["/transAct/mcp/index.js"],
+      "args": ["/path/to/wiki-explorer/index.js"],
       "env": {
-        "WIKI_PATH": "/transAct/docs/WIKI.md"
+        "WIKI_PATH": "/path/to/your/docs/WIKI.md"
       }
     }
   }
@@ -87,11 +88,11 @@ Add to `.vscode/mcp.json`:
 ```json
 {
   "servers": {
-    "transact-wiki": {
+    "wiki-explorer": {
       "command": "node",
-      "args": ["/transAct/mcp/index.js"],
+      "args": ["/path/to/wiki-explorer/index.js"],
       "env": {
-        "WIKI_PATH": "/transAct/docs/WIKI.md"
+        "WIKI_PATH": "/path/to/your/docs/WIKI.md"
       }
     }
   }
