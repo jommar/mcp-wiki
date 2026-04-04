@@ -21,7 +21,7 @@ function validateKey(key) {
 const wiki = new WikiParser(process.env.WIKI_PATH, { watch: true });
 
 const server = new McpServer({
-  name: 'transact-wiki-explorer',
+  name: 'wiki-explorer',
   version: '1.0.0',
 });
 
