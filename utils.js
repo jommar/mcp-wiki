@@ -4,11 +4,18 @@ import { lexer } from 'marked';
 import { logger } from './logger.js';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
-const slugify = (text) =>
-  text
+
+const slugify = (text) => {
+  if (!text || !text.trim()) return '';
+  return text
     .toLowerCase()
     .replace(/[^\w]+/g, '-')
     .replace(/(^-|-$)/g, '');
+};
+
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function levenshtein(a, b) {
   const m = a.length;
@@ -37,12 +44,6 @@ function resolveSafePath(filePath) {
     throw new Error(`Invalid file extension: "${ext}". Only .md/.markdown files are allowed`);
   }
 
-  try {
-    fs.accessSync(resolved, fs.constants.R_OK);
-  } catch {
-    throw new Error(`File not found or not readable: "${resolved}"`);
-  }
-
   return resolved;
 }
 
@@ -50,6 +51,7 @@ function resolveSafePath(filePath) {
  * @typedef {Object} SectionMeta
  * @property {string} title
  * @property {string} parent
+ * @property {string[]} breadcrumbs
  * @property {number} depth
  * @property {number} [start]
  * @property {number} [end]
@@ -59,6 +61,7 @@ function resolveSafePath(filePath) {
  * @typedef {Object} Section
  * @property {string} title
  * @property {string} parent
+ * @property {string[]} breadcrumbs
  * @property {number} depth
  * @property {number} start
  * @property {number} end
@@ -77,6 +80,7 @@ export class WikiParser {
   #rawMarkdown = null;
   #watcher = null;
   #watchDebounce = null;
+  #slugCounts = {};
 
   /**
    * @param {string} filePath
@@ -90,6 +94,20 @@ export class WikiParser {
     this.#buildIndex();
 
     if (watch) this.#startWatcher();
+  }
+
+  /**
+   * Async factory for non-blocking initialization
+   * @param {string} filePath
+   * @param {{ watch?: boolean }} [options]
+   * @returns {Promise<WikiParser>}
+   */
+  static async create(filePath, { watch = false } = {}) {
+    const parser = new WikiParser(filePath, { watch: false });
+    await parser.#loadMarkdownAsync();
+    await parser.#buildIndexAsync();
+    if (watch) parser.#startWatcher();
+    return parser;
   }
 
   #loadMarkdown() {
@@ -107,45 +125,63 @@ export class WikiParser {
     }
   }
 
+  async #loadMarkdownAsync() {
+    const { stat, readFile } = fs.promises;
+    try {
+      const fileStat = await stat(this.#filePath);
+      if (fileStat.size > MAX_FILE_SIZE) {
+        throw new Error(`Wiki file exceeds ${MAX_FILE_SIZE / 1024 / 1024}MB limit (${(fileStat.size / 1024 / 1024).toFixed(1)}MB)`);
+      }
+
+      this.#rawMarkdown = await readFile(this.#filePath, 'utf8');
+      logger.debug('Loaded wiki file (async)', { path: this.#filePath, size: fileStat.size });
+    } catch (err) {
+      if (err.message.includes('exceeds')) throw err;
+      throw new Error(`Could not load wiki at "${this.#filePath}": ${err.message}`);
+    }
+  }
+
   #buildIndex() {
     if (!this.#rawMarkdown) return;
 
     const tokens = lexer(this.#rawMarkdown);
-    let currentKey = '';
-    let currentSection = null;
     const headingOrder = [];
+    const headingStack = [];
+    this.#slugCounts = {};
 
     tokens.forEach((token) => {
       if (token.type === 'heading' && token.depth > 1) {
-        const slug = slugify(token.text);
-
-        if (token.depth === 3 && currentSection && currentSection.depth === 2) {
-          currentKey = `${slugify(currentSection.text)}-${slug}`;
-        } else {
-          currentKey = slug;
+        while (headingStack.length && headingStack.at(-1).depth >= token.depth) {
+          headingStack.pop();
         }
+
+        const slug = slugify(token.text);
+        if (!slug) return;
+
+        const parentSlug = headingStack.length ? headingStack.at(-1).runningSlug : '';
+        const baseSlug = parentSlug ? `${parentSlug}-${slug}` : slug;
+
+        this.#slugCounts[baseSlug] = (this.#slugCounts[baseSlug] || 0) + 1;
+        const currentKey = this.#slugCounts[baseSlug] > 1
+          ? `${baseSlug}-${this.#slugCounts[baseSlug] - 1}`
+          : baseSlug;
+
+        const parentText = headingStack.length ? headingStack.at(-1).text : 'Root';
+        const breadcrumbs = headingStack.map((h) => h.text);
 
         this.#index[currentKey] = {
           title: token.text,
-          parent: token.depth === 3 ? currentSection?.text : 'Root',
+          parent: parentText,
           depth: token.depth,
+          breadcrumbs,
         };
 
         headingOrder.push({ key: currentKey, text: token.text, depth: token.depth });
-
-        if (token.depth === 2) currentSection = token;
+        headingStack.push({ slug, text: token.text, depth: token.depth, runningSlug: baseSlug });
       }
     });
 
-    let scanPos = 0;
-    headingOrder.forEach((h) => {
-      const headingLine = `${'#'.repeat(h.depth)} ${h.text}\n`;
-      const found = this.#rawMarkdown.indexOf(headingLine, scanPos);
-      if (found !== -1) {
-        this.#index[h.key].start = found;
-        scanPos = found + headingLine.length;
-      }
-    });
+    this.#assignPositions(headingOrder);
 
     const keys = Object.keys(this.#index);
     keys.forEach((key, i) => {
@@ -156,27 +192,103 @@ export class WikiParser {
     logger.debug('Built index', { sections: keys.length });
   }
 
+  async #buildIndexAsync() {
+    if (!this.#rawMarkdown) return;
+
+    const tokens = lexer(this.#rawMarkdown);
+    const headingOrder = [];
+    const headingStack = [];
+    this.#slugCounts = {};
+
+    for (const token of tokens) {
+      if (token.type === 'heading' && token.depth > 1) {
+        while (headingStack.length && headingStack.at(-1).depth >= token.depth) {
+          headingStack.pop();
+        }
+
+        const slug = slugify(token.text);
+        if (!slug) continue;
+
+        const parentSlug = headingStack.length ? headingStack.at(-1).runningSlug : '';
+        const baseSlug = parentSlug ? `${parentSlug}-${slug}` : slug;
+
+        this.#slugCounts[baseSlug] = (this.#slugCounts[baseSlug] || 0) + 1;
+        const currentKey = this.#slugCounts[baseSlug] > 1
+          ? `${baseSlug}-${this.#slugCounts[baseSlug] - 1}`
+          : baseSlug;
+
+        const parentText = headingStack.length ? headingStack.at(-1).text : 'Root';
+        const breadcrumbs = headingStack.map((h) => h.text);
+
+        this.#index[currentKey] = {
+          title: token.text,
+          parent: parentText,
+          depth: token.depth,
+          breadcrumbs,
+        };
+
+        headingOrder.push({ key: currentKey, text: token.text, depth: token.depth });
+        headingStack.push({ slug, text: token.text, depth: token.depth, runningSlug: baseSlug });
+      }
+    }
+
+    this.#assignPositions(headingOrder);
+
+    const keys = Object.keys(this.#index);
+    keys.forEach((key, i) => {
+      const nextStart = this.#index[keys[i + 1]]?.start;
+      this.#index[key].end = nextStart ?? this.#rawMarkdown.length;
+    });
+
+    logger.debug('Built index (async)', { sections: keys.length });
+  }
+
+  #assignPositions(headingOrder) {
+    let scanPos = 0;
+    headingOrder.forEach((h) => {
+      const headingPrefix = '#'.repeat(h.depth);
+      const escapedText = escapeRegex(h.text);
+      const headingRegex = new RegExp(`^${headingPrefix}\\s+${escapedText}\\s*(?:#+\\s*)?$`, 'gm');
+
+      headingRegex.lastIndex = scanPos;
+      const match = headingRegex.exec(this.#rawMarkdown);
+
+      if (match) {
+        this.#index[h.key].start = match.index;
+        scanPos = match.index + match[0].length;
+      } else {
+        logger.warn('Heading not found in raw markdown', { key: h.key, text: h.text });
+      }
+    });
+  }
+
   #startWatcher() {
     if (this.#watcher) return;
 
-    try {
-      this.#watcher = fs.watch(this.#filePath, { persistent: false }, (eventType) => {
-        if (eventType !== 'change') return;
+    const watchFile = () => {
+      try {
+        this.#watcher = fs.watch(this.#filePath, { persistent: false }, (eventType) => {
+          if (eventType !== 'change') return;
 
-        clearTimeout(this.#watchDebounce);
-        this.#watchDebounce = setTimeout(() => {
-          logger.info('Wiki file changed, reloading');
-          this.reload();
-        }, 300);
-      });
+          clearTimeout(this.#watchDebounce);
+          this.#watchDebounce = setTimeout(() => {
+            logger.info('Wiki file changed, reloading');
+            this.reload();
+          }, 300);
+        });
 
-      this.#watcher.on('error', (err) => {
-        logger.warn('File watcher error, falling back to manual reload', { error: err.message });
-        this.#stopWatcher();
-      });
-    } catch (err) {
-      logger.warn('Could not start file watcher, manual reload required', { error: err.message });
-    }
+        this.#watcher.on('error', (err) => {
+          logger.warn('File watcher error, retrying in 1s', { error: err.message });
+          this.#stopWatcher();
+          setTimeout(() => this.#startWatcher(), 1000);
+        });
+      } catch (err) {
+        logger.warn('Could not start file watcher, retrying in 1s', { error: err.message });
+        setTimeout(() => this.#startWatcher(), 1000);
+      }
+    };
+
+    watchFile();
   }
 
   #stopWatcher() {
@@ -197,25 +309,33 @@ export class WikiParser {
     if (!query) return keys;
 
     if (fuzzy) {
-      const querySlug = slugify(query);
+      const queryWords = slugify(query).split('-').filter((w) => w.length >= 2);
       const scored = keys.map((k) => {
-        const keyWords = k.split('-');
-        const titleWords = this.#index[k].title.toLowerCase().split(/\s+/);
+        const keyWords = k.split('-').filter((w) => w.length >= 2);
+        const titleWords = this.#index[k].title.toLowerCase().split(/\s+/).filter((w) => w.length >= 2);
         const allWords = [...keyWords, ...titleWords];
 
-        let bestScore = Infinity;
-        for (const word of allWords) {
-          if (word.length < 2) continue;
-          const dist = levenshtein(querySlug, word);
-          if (dist < bestScore) bestScore = dist;
+        let totalScore = 0;
+        let matchedWords = 0;
+
+        for (const qWord of queryWords) {
+          let bestScore = Infinity;
+          for (const word of allWords) {
+            const dist = levenshtein(qWord, word);
+            if (dist < bestScore) bestScore = dist;
+          }
+          if (bestScore <= Math.max(2, Math.floor(qWord.length * 0.3))) {
+            totalScore += bestScore;
+            matchedWords++;
+          }
         }
 
-        return { key: k, score: bestScore };
+        return { key: k, score: matchedWords > 0 ? totalScore / matchedWords : Infinity, matchedWords };
       });
 
       return scored
-        .filter((s) => s.score <= Math.max(2, Math.floor(querySlug.length * 0.3)))
-        .sort((a, b) => a.score - b.score)
+        .filter((s) => s.matchedWords > 0)
+        .sort((a, b) => a.score - b.score || b.matchedWords - a.matchedWords)
         .slice(0, limit)
         .map((s) => s.key);
     }
@@ -250,7 +370,9 @@ export class WikiParser {
     if (!meta || meta.start === undefined) return null;
 
     try {
-      const content = this.#rawMarkdown.slice(meta.start, meta.end);
+      const headingLineEnd = this.#rawMarkdown.indexOf('\n', meta.start);
+      const contentStart = headingLineEnd === -1 ? meta.end : headingLineEnd + 1;
+      const content = this.#rawMarkdown.slice(contentStart, meta.end).trim();
       return { ...meta, content };
     } catch (err) {
       logger.error(`Error reading section '${key}'`, { error: err.message });
@@ -260,7 +382,7 @@ export class WikiParser {
 
   /**
    * @param {string[]} keys
-   * @returns {{ key: string, title?: string, parent?: string, depth?: number, content?: string, error?: string }[]}
+   * @returns {{ key: string, title?: string, parent?: string, breadcrumbs?: string[], depth?: number, content?: string, error?: string }[]}
    */
   getSections(keys) {
     return keys

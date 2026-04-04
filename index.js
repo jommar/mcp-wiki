@@ -82,7 +82,7 @@ server.registerTool(
 
     const formatted = Object.entries(byParent)
       .map(([parent, sections]) => {
-        const lines = sections.map((s) => `  - ${s.key} (${s.depth === 2 ? 'H2' : 'H3'}: ${s.title})`);
+        const lines = sections.map((s) => `  - ${s.key} (H${s.depth}: ${s.title})`);
         return `## ${parent}\n${lines.join('\n')}`;
       })
       .join('\n\n');
