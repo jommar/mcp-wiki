@@ -24,11 +24,15 @@ const server = new McpServer({
   version: '1.0.0',
 });
 
+const readOnlyAnnotations = { readOnlyHint: true };
+
 server.tool(
-  'list_wiki',
-  'List all available wiki section keys',
-  {},
-  { readOnlyHint: true },
+  {
+    name: 'list_wiki',
+    description: 'List all available wiki section keys',
+    inputSchema: {},
+    annotations: readOnlyAnnotations,
+  },
   async () => {
     const keys = wiki.getAllKeys();
     const formattedList = keys
@@ -47,13 +51,15 @@ server.tool(
 );
 
 server.tool(
-  'search_wiki',
-  'Search wiki section titles by keyword',
   {
-    query: z.string().min(1).max(200).describe('Keyword to search'),
-    fuzzy: z.boolean().optional().default(false).describe('Enable fuzzy matching for typos'),
+    name: 'search_wiki',
+    description: 'Search wiki section titles by keyword',
+    inputSchema: {
+      query: z.string().min(1).max(200).describe('Keyword to search'),
+      fuzzy: z.boolean().optional().default(false).describe('Enable fuzzy matching for typos'),
+    },
+    annotations: readOnlyAnnotations,
   },
-  { readOnlyHint: true },
   async ({ query, fuzzy }) => {
     const results = wiki.search(query, { fuzzy });
 
@@ -86,10 +92,14 @@ server.tool(
 );
 
 server.tool(
-  'get_wiki_section',
-  'Retrieve the full markdown content of a specific wiki section',
-  { key: z.string().describe("The unique slug key of the section (e.g., 'portage-backend-architecture')") },
-  { readOnlyHint: true },
+  {
+    name: 'get_wiki_section',
+    description: 'Retrieve the full markdown content of a specific wiki section',
+    inputSchema: {
+      key: z.string().describe("The unique slug key of the section (e.g., 'portage-backend-architecture')"),
+    },
+    annotations: readOnlyAnnotations,
+  },
   async ({ key }) => {
     const keyError = validateKey(key);
     if (keyError) {
@@ -126,16 +136,18 @@ server.tool(
 );
 
 server.tool(
-  'get_wiki_sections',
-  'Retrieve multiple wiki sections at once',
   {
-    keys: z
-      .array(z.string())
-      .min(1)
-      .max(MAX_BATCH_KEYS)
-      .describe(`Array of section slug keys to retrieve (max ${MAX_BATCH_KEYS})`),
+    name: 'get_wiki_sections',
+    description: 'Retrieve multiple wiki sections at once',
+    inputSchema: {
+      keys: z
+        .array(z.string())
+        .min(1)
+        .max(MAX_BATCH_KEYS)
+        .describe(`Array of section slug keys to retrieve (max ${MAX_BATCH_KEYS})`),
+    },
+    annotations: readOnlyAnnotations,
   },
-  { readOnlyHint: true },
   async ({ keys }) => {
     const invalidKeys = keys.map(validateKey).filter(Boolean);
     if (invalidKeys.length > 0) {
