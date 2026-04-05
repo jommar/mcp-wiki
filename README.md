@@ -5,11 +5,11 @@ A generic MCP (Model Context Protocol) server that exposes any project wiki to A
 ## Features
 
 - **Lazy loading** — indexes headings once, loads content on-demand via byte positions
-- **Auto-reload** — watches the wiki file for changes with debouncing
+- **Auto-reload** — watches the wiki file or markdown directory for changes with debouncing
 - **Fuzzy search** — handles typos and partial matches via levenshtein distance
 - **Batch fetch** — retrieve multiple sections in one call (max 20)
 - **Smart suggestions** — returns similar keys when a section isn't found
-- **Path safety** — validates file extensions and prevents traversal attacks
+- **Path safety** — validates markdown sources and safe path resolution
 - **Graceful shutdown** — handles SIGINT/SIGTERM, cleans up watchers
 - **Structured logging** — configurable log levels for debugging
 
@@ -29,7 +29,7 @@ npm test
 ### .env
 
 ```env
-WIKI_PATH=path/to/your/WIKI.md
+WIKI_PATH=path/to/your/wiki-source  # file (.md/.markdown) or directory
 LOG_LEVEL=info  # debug, info, warn, error
 ```
 
@@ -56,9 +56,9 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
       "command": "node",
       "args": ["/path/to/wiki-explorer/index.js"],
       "env": {
-        "WIKI_PATH": "/path/to/your/docs/WIKI.md"
+        "WIKI_PATH": "/path/to/your/docs/wiki"
       }
-    }
+      }
   }
 }
 ```
@@ -74,9 +74,9 @@ Add to Cursor MCP settings:
       "command": "node",
       "args": ["/path/to/wiki-explorer/index.js"],
       "env": {
-        "WIKI_PATH": "/path/to/your/docs/WIKI.md"
+        "WIKI_PATH": "/path/to/your/docs/wiki"
       }
-    }
+      }
   }
 }
 ```
@@ -92,9 +92,9 @@ Add to `.vscode/mcp.json`:
       "command": "node",
       "args": ["/path/to/wiki-explorer/index.js"],
       "env": {
-        "WIKI_PATH": "/path/to/your/docs/WIKI.md"
+        "WIKI_PATH": "/path/to/your/docs/wiki"
       }
-    }
+      }
   }
 }
 ```
@@ -121,7 +121,7 @@ test.js           → 49 assertions covering all functionality
 
 ### WikiParser Class
 
-- **Constructor** — validates/resolves path, loads markdown, builds heading index with byte positions
+- **Constructor** — validates file/directory source, loads markdown docs, builds heading index with byte positions
 - **`search(query, { fuzzy, limit })`** — find sections by keyword
 - **`findSimilar(key)`** — get similar keys via levenshtein distance
 - **`getSection(key)`** — retrieve content for a single section
@@ -129,10 +129,17 @@ test.js           → 49 assertions covering all functionality
 - **`reload()`** — re-read file and rebuild index
 - **`close()`** — stop file watcher
 
+### Key Compatibility
+
+- Canonical keys in directory mode are prefixed by file slug (e.g. `user-wiki-approval-workflow-deep-dive`)
+- Legacy heading-only keys are still accepted in `getMeta`/`getSection` for backward compatibility
+- Ambiguous legacy keys require suffixed form (`-1`, `-2`) to resolve deterministically
+- Search accepts legacy key queries but returns canonical keys
+
 ### Security
 
-- File extension validation (`.md`/`.markdown` only)
-- Path traversal prevention via `path.resolve` + `fs.access`
+- Source validation (`.md`/`.markdown` file or directory)
+- Safe path resolution via `path.resolve` + fs stat checks
 - File size cap (50MB default)
 - Key format validation (lowercase alphanumeric + hyphens)
 - Batch request limits (max 20 keys)

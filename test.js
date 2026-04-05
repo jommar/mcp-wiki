@@ -20,11 +20,82 @@ function assert(condition, label) {
 
 console.log('WikiParser Tests\n');
 
+const fixtureRoot = fs.mkdtempSync(path.join('/tmp', 'wiki-parser-fixture-'));
+const singleWikiFile = path.join(fixtureRoot, 'WIKI.md');
+const directoryWikiRoot = path.join(fixtureRoot, 'wiki');
+const nestedWikiDir = path.join(directoryWikiRoot, 'nested');
+
+fs.mkdirSync(directoryWikiRoot, { recursive: true });
+fs.mkdirSync(nestedWikiDir, { recursive: true });
+
+const singleWikiContent = `# Team Wiki
+
+## Approval Workflow Deep Dive
+
+This section explains approval flow.
+
+### Determining "Fully Approved"
+
+The fullyApproved field becomes true when all required criteria pass.
+
+#### Implementation Notes
+
+- Uses fullyApproved from derived status logic.
+
+## Portage Backend Architecture
+
+Services, queues, and integrations overview.
+`;
+
+const userWikiContent = `# User Wiki
+
+## Approval Workflow Deep Dive
+
+Directory-based section.
+
+### Determining "Fully Approved"
+
+This doc validates prefixed keys and search by filename.
+`;
+
+const operationsWikiContent = `# Operations
+
+## Incident Basics
+
+Runbook snippets.
+`;
+
+fs.writeFileSync(singleWikiFile, singleWikiContent);
+fs.writeFileSync(path.join(directoryWikiRoot, 'user_wiki.md'), userWikiContent);
+fs.writeFileSync(path.join(nestedWikiDir, 'operations.md'), operationsWikiContent);
+fs.writeFileSync(path.join(nestedWikiDir, 'legacy.md'), '# Legacy\n\n## Approval Workflow Deep Dive\n\nAmbiguous legacy key test.\n');
+
 // --- Constructor & Index ---
 console.log('1. Initialization');
-const wiki = new WikiParser(process.env.WIKI_PATH);
+const wiki = new WikiParser(singleWikiFile);
 assert(wiki.getAllKeys().length > 0, 'should load sections from wiki');
 assert(wiki.getAllKeys().includes('approval-workflow-deep-dive'), 'should include known section');
+
+console.log('\n1a. Directory mode');
+const directoryWiki = new WikiParser(directoryWikiRoot);
+const directoryKeys = directoryWiki.getAllKeys();
+assert(directoryKeys.length > 0, 'should load sections from markdown directory');
+assert(
+  directoryKeys.includes('user-wiki-approval-workflow-deep-dive'),
+  'should prefix section keys with file slug in directory mode'
+);
+assert(
+  directoryKeys.includes('nested-operations-incident-basics'),
+  'should include nested markdown files when indexing directory'
+);
+assert(
+  directoryKeys.includes('user-wiki-approval-workflow-deep-dive-determining-fully-approved'),
+  'should include nested heading keys with file prefix'
+);
+assert(
+  directoryKeys.includes('nested-legacy-approval-workflow-deep-dive'),
+  'should include second file section for legacy ambiguity test'
+);
 
 // --- Path validation ---
 console.log('\n1b. Path validation');
@@ -36,7 +107,7 @@ try {
 }
 
 try {
-  new WikiParser('../../etc/passwd');
+  new WikiParser(path.join(process.cwd(), 'index.js'));
   assert(false, 'should reject non-markdown files');
 } catch (err) {
   assert(err.message.includes('Invalid file extension'), 'should reject non-.md extensions');
@@ -55,6 +126,12 @@ const approvalResults = wiki.search('approval');
 assert(approvalResults.length > 0, 'should find sections matching "approval"');
 assert(approvalResults.includes('approval-workflow-deep-dive'), 'should include exact match');
 
+const fileSearchResults = directoryWiki.search('user wiki');
+assert(
+  fileSearchResults.some((k) => k.startsWith('user-wiki-')),
+  'should match sections by file slug/file name in directory mode'
+);
+
 const emptyResults = wiki.search('nonexistent-xyz');
 assert(emptyResults.length === 0, 'should return empty for unknown query');
 
@@ -66,6 +143,12 @@ console.log('\n2b. Fuzzy Search');
 const fuzzyResults = wiki.search('approvl', { fuzzy: true });
 assert(fuzzyResults.length > 0, 'should find matches with typo');
 assert(fuzzyResults.some((k) => k.includes('approval')), 'should match "approval" despite typo');
+
+const fuzzyFileResults = directoryWiki.search('usr wik', { fuzzy: true });
+assert(
+  fuzzyFileResults.some((k) => k.startsWith('user-wiki-')),
+  'should fuzzy-match file names/slugs in directory mode'
+);
 
 const fuzzyLimit = wiki.search('a', { fuzzy: true, limit: 3 });
 assert(fuzzyLimit.length <= 3, 'should respect limit parameter');
@@ -90,16 +173,42 @@ assert(meta.end !== undefined && meta.end !== null, 'should have end position');
 const missingMeta = wiki.getMeta('does-not-exist');
 assert(missingMeta === null, 'should return null for invalid key');
 
+const legacyMeta = directoryWiki.getMeta('approval-workflow-deep-dive-determining-fully-approved');
+assert(legacyMeta !== null, 'should resolve legacy key for meta lookup in directory mode');
+assert(
+  legacyMeta?.fileSlug === 'user-wiki',
+  'legacy key meta lookup should resolve to canonical prefixed section'
+);
+
+const legacyRootMeta = directoryWiki.getMeta('approval-workflow-deep-dive');
+assert(legacyRootMeta !== null, 'should resolve legacy root key to canonical key');
+
+const legacyRootMetaDuplicate = directoryWiki.getMeta('approval-workflow-deep-dive-1');
+assert(legacyRootMetaDuplicate !== null, 'should resolve suffixed legacy key for duplicate heading path');
+
 // --- Get Section ---
 console.log('\n4. Get Section');
 const section = wiki.getSection('approval-workflow-deep-dive-determining-fully-approved');
 assert(section !== null, 'should return section for valid key');
 assert(section.content.length > 0, 'should have non-empty content');
-assert(section.content.includes('###'), 'should include heading in content');
+assert(section.content.includes('fullyApproved'), 'should include section body text');
 assert(section.content.includes('fullyApproved'), 'should contain expected keywords');
 
 const missingSection = wiki.getSection('does-not-exist');
 assert(missingSection === null, 'should return null for invalid key');
+
+const legacySection = directoryWiki.getSection('approval-workflow-deep-dive-determining-fully-approved');
+assert(legacySection !== null, 'should resolve legacy key for section lookup in directory mode');
+assert(
+  legacySection?.content.includes('prefixed keys'),
+  'legacy key section lookup should return canonical section content'
+);
+
+const legacySearch = directoryWiki.search('approval-workflow-deep-dive-determining-fully-approved');
+assert(
+  legacySearch.includes('user-wiki-approval-workflow-deep-dive-determining-fully-approved'),
+  'search should match legacy key query and return canonical key'
+);
 
 // --- Get Sections (batch) ---
 console.log('\n4b. Get Sections (batch)');
@@ -130,6 +239,11 @@ const afterCount = wiki.getAllKeys().length;
 assert(beforeCount === afterCount, 'should have same section count after reload');
 assert(afterCount > 0, 'should still have sections after reload');
 
+const beforeDirCount = directoryWiki.getAllKeys().length;
+directoryWiki.reload();
+const afterDirCount = directoryWiki.getAllKeys().length;
+assert(beforeDirCount === afterDirCount, 'should keep same section count after directory reload');
+
 // --- FS Watcher ---
 console.log('\n7. FS Watcher');
 const tmpFile = path.join('/tmp', `wiki-test-${Date.now()}.md`);
@@ -144,6 +258,21 @@ await new Promise((r) => setTimeout(r, 500));
 assert(watchedWiki.getAllKeys().includes('new-section'), 'should auto-reload on file change');
 watchedWiki.close();
 fs.unlinkSync(tmpFile);
+
+console.log('\n7b. Directory watcher');
+const watchDir = fs.mkdtempSync(path.join('/tmp', 'wiki-watch-dir-'));
+const initialDoc = path.join(watchDir, 'alpha.md');
+const addedDoc = path.join(watchDir, 'beta.md');
+fs.writeFileSync(initialDoc, '# Alpha\n\n## Initial\n\nBase content.\n');
+
+const watchedDirectoryWiki = new WikiParser(watchDir, { watch: true });
+assert(watchedDirectoryWiki.getAllKeys().includes('alpha-initial'), 'should index directory file on startup');
+
+fs.writeFileSync(addedDoc, '# Beta\n\n## Added\n\nMore content.\n');
+await new Promise((r) => setTimeout(r, 700));
+assert(watchedDirectoryWiki.getAllKeys().includes('beta-added'), 'should auto-reload on directory add');
+watchedDirectoryWiki.close();
+fs.rmSync(watchDir, { recursive: true, force: true });
 
 // --- Key validation ---
 console.log('\n8. Key format validation');
@@ -161,7 +290,10 @@ for (const k of invalidKeys) {
 // --- Close cleanup ---
 console.log('\n9. Close');
 wiki.close();
+directoryWiki.close();
 assert(true, 'should close without error');
+
+fs.rmSync(fixtureRoot, { recursive: true, force: true });
 
 // --- Summary ---
 console.log(`\n${passed} passed, ${failed} failed`);
