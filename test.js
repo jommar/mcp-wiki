@@ -70,6 +70,24 @@ fs.writeFileSync(path.join(directoryWikiRoot, 'user_wiki.md'), userWikiContent);
 fs.writeFileSync(path.join(nestedWikiDir, 'operations.md'), operationsWikiContent);
 fs.writeFileSync(path.join(nestedWikiDir, 'legacy.md'), '# Legacy\n\n## Approval Workflow Deep Dive\n\nAmbiguous legacy key test.\n');
 
+const customAnchorContent = `# Main Documentation
+
+## Getting Started {#getting-started}
+
+Welcome to the guide.
+
+### Quick Start {#quick-start}
+
+Quick start content here.
+
+## API Reference {#api-ref}
+
+API documentation content.
+`;
+
+const customAnchorFile = path.join(directoryWikiRoot, 'custom_anchors.md');
+fs.writeFileSync(customAnchorFile, customAnchorContent);
+
 // --- Constructor & Index ---
 console.log('1. Initialization');
 const wiki = new WikiParser(singleWikiFile);
@@ -303,6 +321,36 @@ fs.rmSync(watchDir, { recursive: true, force: true });
 console.log('\n8. Key format validation');
 const validKeys = ['portage-backend', 'approval-workflow', 'test-123'];
 const invalidKeys = ['UPPERCASE', 'with spaces', 'with/slashes', 'with.dots'];
+
+// --- Custom Anchors ---
+console.log('\n8a. Custom Anchors');
+const customAnchorWiki = new WikiParser(customAnchorFile);
+const customKeys = customAnchorWiki.getAllKeys();
+assert(customKeys.includes('getting-started'), 'should create key from custom anchor');
+assert(customKeys.includes('getting-started-quick-start'), 'should create nested key from custom anchor');
+assert(customKeys.includes('api-ref'), 'should create key from api custom anchor');
+
+// Verify custom anchor keys are registered
+const gettingStartedMeta = customAnchorWiki.getMeta('getting-started');
+assert(gettingStartedMeta !== null, 'should find section by custom anchor key');
+assert(gettingStartedMeta.title === 'Getting Started', 'should have title without anchor syntax');
+
+// Verify content is cleaned (no anchor syntax in output)
+const gettingStartedSection = customAnchorWiki.getSection('getting-started');
+assert(gettingStartedSection !== null, 'should get section with custom anchor key');
+assert(!gettingStartedSection.content.includes('{#'), 'should not contain anchor syntax in content');
+assert(gettingStartedSection.content.includes('Welcome to the guide'), 'should have actual content');
+
+// Verify title stripping
+assert(gettingStartedSection.title === 'Getting Started', 'title should not have anchor suffix');
+
+// Verify legacy alias registration (quick-start resolves to nested key)
+const quickStartLegacy = customAnchorWiki.getMeta('quick-start');
+assert(quickStartLegacy !== null, 'should resolve custom anchor as legacy alias');
+assert(quickStartLegacy.title === 'Quick Start', 'should resolve to correct title');
+
+// Clean up
+customAnchorWiki.close();
 
 for (const k of validKeys) {
   assert(/^[a-z0-9-]+$/.test(k), `"${k}" should be valid format`);

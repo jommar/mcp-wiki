@@ -1,13 +1,13 @@
 {
-  "name": "mcp",
+  "name": "wiki-explorer-mcp",
   "version": "1.0.0",
-  "description": "",
+  "description": "MCP server that exposes project wikis to AI assistants for contextual lookups",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "node test.js"
   },
-  "keywords": [],
+  "keywords": ["mcp", "model-context-protocol", "wiki", "knowledge-base", "ai", "claude", "cursor"],
   "author": "",
   "license": "ISC",
   "type": "module",

@@ -646,17 +646,6 @@ export class WikiParser {
   }
 
   /**
-   * Clean custom anchor syntax from heading text in content
-   * e.g., "### Title {#custom-anchor}\n\nContent" -> "### Title\n\nContent"
-   */
-  #cleanContentWithAnchors(rawMarkdown, start, end) {
-    const headingLineMatch = rawMarkdown.slice(start, end).match(/^#+\s+.+\{#[^}]+\}/m);
-    if (!headingLineMatch) return null;
-    const cleaned = rawMarkdown.slice(start, end).replace(headingLineMatch[0], headingLineMatch[0].replace(/\s*\{#[^}]+\}$/, ''));
-    return cleaned;
-  }
-
-  /**
    * @param {string[]} keys
    * @returns {{ key: string, title?: string, parent?: string, breadcrumbs?: string[], depth?: number, content?: string, error?: string }[]}
    */
