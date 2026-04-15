@@ -7,6 +7,11 @@ A generic MCP (Model Context Protocol) server that exposes any project wiki to A
 - **Lazy loading** — indexes headings once, loads content on-demand via byte positions
 - **Auto-reload** — watches the wiki file or markdown directory for changes with debouncing
 - **Fuzzy search** — handles typos and partial matches via levenshtein distance
+- **Content search** — searches within section content, not just headings
+- **Custom anchors** — use `{#anchor}` syntax in headings for stable TOC links
+- **Directory mode** — index entire markdown directory trees with file-prefixed keys
+- **Legacy key support** — backward-compatible lookup of heading-only keys
+- **Heading hierarchy** — tracks full breadcrumb path for nested sections
 - **Batch fetch** — retrieve multiple sections in one call (max 20)
 - **Smart suggestions** — returns similar keys when a section isn't found
 - **Path safety** — validates markdown sources and safe path resolution
@@ -115,7 +120,7 @@ LOG_LEVEL=debug npm start
 index.js          → MCP server + tool registration + signal handlers
 utils.js          → WikiParser class (indexing, search, content extraction)
 logger.js         → Structured logging with configurable levels
-test.js           → 49 assertions covering all functionality
+test.js           → 67 assertions covering all functionality
 .env              → WIKI_PATH, LOG_LEVEL configuration
 ```
 
@@ -136,6 +141,24 @@ test.js           → 49 assertions covering all functionality
 - Ambiguous legacy keys require suffixed form (`-1`, `-2`) to resolve deterministically
 - Search accepts legacy key queries but returns canonical keys
 
+### Custom Anchors
+
+Headings can include a custom anchor using `{#anchor-name}` syntax at the end of the heading text:
+
+```markdown
+## Backend Architecture {#portage-backend-architecture}
+```
+
+This creates a stable anchor that can be used in table of contents or direct links. The anchor is stripped from the displayed title but registered as a legacy alias for lookup.
+
+### Content Search
+
+Search matches both heading text and section content. Results are prioritized:
+1. **Header matches** — exact or fuzzy match in heading text
+2. **Content matches** — keyword found within section body
+
+This ensures the most relevant sections appear first.
+
 ### Security
 
 - Source validation (`.md`/`.markdown` file or directory)
@@ -154,7 +177,7 @@ Handles `SIGINT`, `SIGTERM`, `uncaughtException`, and `unhandledRejection`. Clea
 npm test
 ```
 
-Covers: initialization, path validation, search, fuzzy search, findSimilar, meta, sections, batch fetch, boundaries, reload, file watcher, key format validation, and cleanup.
+Covers: initialization, path validation, directory mode, search (headers + content), fuzzy search, findSimilar, meta, sections, batch fetch, boundaries, reload, file watcher, key format validation, custom anchors, legacy key resolution, and cleanup.
 
 ## CI/CD
 
