@@ -14,6 +14,16 @@ const slugify = (text) => {
     .replace(/(^-|-$)/g, '');
 };
 
+/**
+ * Extract custom anchor from heading text (e.g., "Title {#custom-anchor}" -> "Title", "custom-anchor")
+ * Returns { text, anchor } where anchor may be undefined
+ */
+function extractCustomAnchor(text) {
+  const match = text.match(/^(.+?)\s*\{#([^}]+)\}$/);
+  if (!match) return { text, anchor: undefined };
+  return { text: match[1].trim(), anchor: match[2] };
+}
+
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -312,11 +322,16 @@ export class WikiParser {
         headingStack.pop();
       }
 
-      const headingSlug = slugify(token.text);
+      // Extract custom anchor if present (e.g., "Title {#custom-anchor}")
+      const { text: headingText, anchor: customAnchor } = extractCustomAnchor(token.text);
+      const headingSlug = slugify(headingText);
       if (!headingSlug) continue;
 
+      // Use custom anchor if provided, otherwise generate from heading text
+      const slugToUse = customAnchor || headingSlug;
+
       const parentHeadingSlug = headingStack.length ? headingStack.at(-1).runningSlug : '';
-      const baseHeadingSlug = parentHeadingSlug ? `${parentHeadingSlug}-${headingSlug}` : headingSlug;
+      const baseHeadingSlug = parentHeadingSlug ? `${parentHeadingSlug}-${slugToUse}` : slugToUse;
       const prefixedBaseSlug = document.fileSlug ? `${document.fileSlug}-${baseHeadingSlug}` : baseHeadingSlug;
 
       legacySlugCounts[baseHeadingSlug] = (legacySlugCounts[baseHeadingSlug] || 0) + 1;
@@ -331,11 +346,20 @@ export class WikiParser {
 
       this.#registerLegacyAlias(legacyKey, currentKey);
 
+      // If custom anchor was used, also register it directly as a legacy alias
+      // This allows TOC links like #portage-backend-architecture to work
+      if (customAnchor) {
+        // Also register the simple anchor (e.g., "portage-backend-architecture" without file prefix)
+        const simpleAnchor = customAnchor;
+        this.#registerLegacyAlias(simpleAnchor, currentKey);
+      }
+
       const parentText = headingStack.length ? headingStack.at(-1).text : 'Root';
       const breadcrumbs = headingStack.map((h) => h.text);
 
+      // Store the title without the custom anchor syntax for display
       this.#index[currentKey] = {
-        title: token.text,
+        title: headingText,
         parent: parentText,
         depth: token.depth,
         breadcrumbs,
@@ -609,12 +633,27 @@ export class WikiParser {
 
       const headingLineEnd = sourceDocument.rawMarkdown.indexOf('\n', meta.start);
       const contentStart = headingLineEnd === -1 ? meta.end : headingLineEnd + 1;
-      const content = sourceDocument.rawMarkdown.slice(contentStart, meta.end).trim();
+      let content = sourceDocument.rawMarkdown.slice(contentStart, meta.end).trim();
+      
+      // Clean custom anchor syntax from content (e.g., "{#custom-anchor}")
+      content = content.replace(/\s*\{#[^}]+\}/g, '');
+      
       return { ...meta, content };
     } catch (err) {
       logger.error(`Error reading section '${key}'`, { error: err.message });
       return null;
     }
+  }
+
+  /**
+   * Clean custom anchor syntax from heading text in content
+   * e.g., "### Title {#custom-anchor}\n\nContent" -> "### Title\n\nContent"
+   */
+  #cleanContentWithAnchors(rawMarkdown, start, end) {
+    const headingLineMatch = rawMarkdown.slice(start, end).match(/^#+\s+.+\{#[^}]+\}/m);
+    if (!headingLineMatch) return null;
+    const cleaned = rawMarkdown.slice(start, end).replace(headingLineMatch[0], headingLineMatch[0].replace(/\s*\{#[^}]+\}$/, ''));
+    return cleaned;
   }
 
   /**
