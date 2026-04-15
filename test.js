@@ -138,6 +138,31 @@ assert(emptyResults.length === 0, 'should return empty for unknown query');
 const allResults = wiki.search();
 assert(allResults.length === wiki.getAllKeys().length, 'should return all keys with no query');
 
+// --- Content Search ---
+console.log('\n2a. Content Search');
+// Search for content within sections (not in headers)
+const contentResults = wiki.search('fullyApproved');
+assert(contentResults.length > 0, 'should find sections by content keyword');
+// Should find the section that contains "fullyApproved" in its content
+const hasFullyApprovedSection = contentResults.some((k) => {
+  const section = wiki.getSection(k);
+  return section && section.content.includes('fullyApproved');
+});
+assert(hasFullyApprovedSection, 'should return section containing the content keyword');
+
+// Content matches should be sorted after header matches
+const implementationNotesSection = wiki.getSection('approval-workflow-deep-dive-determining-fully-approved-implementation-notes');
+const usesFullyApproved = wiki.search('uses');
+assert(usesFullyApproved.length > 0, 'should find "uses" in content');
+const usesIndex = usesFullyApproved.indexOf('approval-workflow-deep-dive-determining-fully-approved-implementation-notes');
+assert(usesIndex !== -1, 'should find section containing "uses" in its content');
+
+// Test that header matches come before content-only matches
+const approvalAndContent = wiki.search('approval');
+const fullyApprovedContent = wiki.search('fullyApproved');
+assert(approvalAndContent[0] === 'approval-workflow-deep-dive', 'header match should be first for "approval"');
+assert(fullyApprovedContent[0] !== 'approval-workflow-deep-dive', 'content-only match should not be first for "fullyApproved"');
+
 // --- Fuzzy Search ---
 console.log('\n2b. Fuzzy Search');
 const fuzzyResults = wiki.search('approvl', { fuzzy: true });

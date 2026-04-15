@@ -98,7 +98,7 @@ server.registerTool(
 server.registerTool(
   'search_wiki',
   {
-    description: 'Search wiki section titles by keyword. Returns matching keys without content.',
+    description: 'Search wiki section titles and content by keyword. Returns matching section keys. Header matches are prioritized over content matches.',
     inputSchema: {
       query: z.string().min(1).max(200).describe('Keyword to search'),
       fuzzy: z.boolean().optional().default(false).describe('Enable fuzzy matching for typos'),

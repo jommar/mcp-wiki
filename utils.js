@@ -541,16 +541,41 @@ export class WikiParser {
         .map((s) => s.key);
     }
 
+    const queryLower = query.toLowerCase();
+    
+    // Helper to check if content contains query (case-insensitive)
+    const contentMatches = (k) => {
+      const section = this.getSection(k);
+      if (!section) return false;
+      return section.content.toLowerCase().includes(queryLower);
+    };
+
+    // Score sections: header matches are weighted higher than content matches
     return keys
-      .filter(
-        (k) =>
+      .map((k) => {
+        // Check header-based matches (higher priority)
+        const headerMatch =
           k.includes(slugify(query)) ||
           this.#index[k].legacyKey?.includes(slugify(query)) ||
-          this.#index[k].title.toLowerCase().includes(query.toLowerCase()) ||
-          this.#index[k].file?.toLowerCase().includes(query.toLowerCase()) ||
-          this.#index[k].fileSlug?.includes(slugify(query))
-      )
-      .slice(0, limit);
+          this.#index[k].title.toLowerCase().includes(queryLower) ||
+          this.#index[k].file?.toLowerCase().includes(queryLower) ||
+          this.#index[k].fileSlug?.includes(slugify(query));
+
+        // Check content-based match
+        const hasContentMatch = contentMatches(k);
+
+        // Return priority score (lower is better): 0 = header match, 1 = content match only
+        return {
+          key: k,
+          headerMatch,
+          contentMatch: hasContentMatch,
+          priority: headerMatch ? 0 : hasContentMatch ? 1 : -1,
+        };
+      })
+      .filter((r) => r.priority >= 0)
+      .sort((a, b) => a.priority - b.priority)
+      .slice(0, limit)
+      .map((r) => r.key);
   }
 
   /**
