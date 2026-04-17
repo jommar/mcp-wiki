@@ -3,7 +3,7 @@ import path from 'path';
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const LOG_LEVEL = LEVELS[process.env.LOG_LEVEL?.toLowerCase()] ?? LEVELS.info;
-const LOG_DIR = process.env.LOG_DIR || path.resolve('logs');
+const LOG_DIR = process.env.LOG_DIR || path.resolve(import.meta.dirname, 'logs');
 const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS, 10) || 10;
 const LOG_PREFIX = 'wiki';
 
