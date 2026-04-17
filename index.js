@@ -53,6 +53,7 @@ const sectionRefSchema = {
   key: z.string().describe('Canonical slug key for the section'),
   parent: z.string().describe('Parent topic/group name'),
   title: z.string().describe('Display title of the section'),
+  breadcrumbs: z.array(z.string()).describe('Heading hierarchy from root to parent'),
 };
 
 server.registerTool(
@@ -61,8 +62,12 @@ server.registerTool(
     description: 'List all available wiki section keys. Use browse_wiki instead for topic-filtered results.',
     inputSchema: {},
     outputSchema: {
-      sections: z.array(z.object(sectionRefSchema)).describe('All wiki sections'),
+      sections: z.array(z.object({
+        ...sectionRefSchema,
+        contentLength: z.number().describe('Content length in characters'),
+      })).describe('All wiki sections'),
       count: z.number().describe('Total number of sections'),
+      error: z.string().optional().describe('Error message if request failed'),
     },
     annotations: readOnlyAnnotations,
   },
@@ -72,7 +77,7 @@ server.registerTool(
       const keys = wiki.getAllKeys();
       const sections = keys.map((k) => {
         const meta = wiki.getMeta(k);
-        return { key: k, parent: meta.parent, title: meta.title };
+        return { key: k, parent: meta.parent, title: meta.title, breadcrumbs: meta.breadcrumbs, contentLength: meta.contentLength };
       });
 
       logger.info('list_wiki', { count: keys.length });
@@ -80,7 +85,7 @@ server.registerTool(
       return withContent({ sections, count: keys.length });
     } catch (err) {
       logger.error('list_wiki failed', { error: err.message });
-      return withContent({ error: err.message });
+      return withContent({ sections: [], count: 0, error: err.message });
     }
   }
 );
@@ -103,9 +108,11 @@ server.registerTool(
           key: z.string().describe('Canonical slug key'),
           title: z.string().describe('Display title'),
           depth: z.number().describe('Heading depth (2 = H2, 3 = H3, etc.)'),
+          breadcrumbs: z.array(z.string()).describe('Heading hierarchy from root to parent'),
         })),
       })).describe('Sections grouped by parent topic'),
       count: z.number().describe('Total number of matching sections'),
+      error: z.string().optional().describe('Error message if request failed'),
     },
     annotations: readOnlyAnnotations,
   },
@@ -116,7 +123,12 @@ server.registerTool(
       const filtered = topic
         ? keys.filter((k) => {
             const meta = wiki.getMeta(k);
-            return meta.parent.toLowerCase().includes(topic.toLowerCase()) || k.includes(topic.toLowerCase());
+            const topicLower = topic.toLowerCase();
+            return (
+              meta.parent.toLowerCase().includes(topicLower) ||
+              meta.title.toLowerCase().includes(topicLower) ||
+              meta.breadcrumbs.some((b) => b.toLowerCase().includes(topicLower))
+            );
           })
         : keys;
 
@@ -124,7 +136,7 @@ server.registerTool(
       for (const k of filtered) {
         const meta = wiki.getMeta(k);
         if (!byParent[meta.parent]) byParent[meta.parent] = [];
-        byParent[meta.parent].push({ key: k, title: meta.title, depth: meta.depth });
+        byParent[meta.parent].push({ key: k, title: meta.title, depth: meta.depth, breadcrumbs: meta.breadcrumbs });
       }
 
       const groups = Object.entries(byParent).map(([parent, sections]) => ({ parent, sections }));
@@ -142,22 +154,27 @@ server.registerTool(
 server.registerTool(
   'search_wiki',
   {
-    description: 'Search wiki section titles and content by keyword. Returns matching section keys. Header matches are prioritized over content matches.',
+    description: 'Search wiki section titles and content by keyword. Returns matching section keys with snippets. Header matches are prioritized over content matches.',
     inputSchema: {
       query: z.string().min(1).max(200).describe('Keyword to search'),
       fuzzy: z.boolean().optional().default(false).describe('Enable fuzzy matching for typos'),
+      limit: z.number().optional().default(20).describe('Maximum number of results to return'),
     },
     outputSchema: {
-      results: z.array(z.object(sectionRefSchema)).describe('Matching sections, header matches first'),
+      results: z.array(z.object({
+        ...sectionRefSchema,
+        snippet: z.string().optional().describe('Short content excerpt around the match'),
+      })).describe('Matching sections, header matches first'),
       count: z.number().describe('Number of results'),
       suggestions: z.array(z.string()).optional().describe('Similar keys when no results found'),
+      error: z.string().optional().describe('Error message if request failed'),
     },
     annotations: readOnlyAnnotations,
   },
-  async ({ query, fuzzy }) => {
+  async ({ query, fuzzy, limit }) => {
     try {
       requestCounts.search_wiki++;
-      const results = wiki.search(query, { fuzzy });
+      const results = wiki.search(query, { fuzzy, limit, detailed: true });
 
       if (results.length === 0) {
         const similar = wiki.findSimilar(query);
@@ -168,9 +185,14 @@ server.registerTool(
         return withContent({ results: [], count: 0, suggestions: suggestions.length > 0 ? suggestions : undefined });
       }
 
-      const formattedResults = results.map((k) => {
-        const meta = wiki.getMeta(k);
-        return { key: k, parent: meta.parent, title: meta.title };
+      let snippetCount = 0;
+      const formattedResults = results.map((r) => {
+        const meta = wiki.getMeta(r.key);
+        // Only include snippet for content-only matches (header matches are
+        // self-explanatory from the title), and cap at 3 to avoid context
+        // pollution on broad queries
+        const snippet = (r.contentMatch && !r.headerMatch && snippetCount++ < 3) ? wiki.getSnippet(r.key, query) : undefined;
+        return { key: r.key, parent: meta.parent, title: meta.title, breadcrumbs: meta.breadcrumbs, snippet };
       });
 
       logger.info('search_wiki', { query, count: results.length });
@@ -205,6 +227,7 @@ server.registerTool(
     outputSchema: {
       title: z.string().optional().describe('Section display title'),
       parent: z.string().optional().describe('Parent topic name'),
+      breadcrumbs: z.array(z.string()).optional().describe('Heading hierarchy from root to parent'),
       source: z.string().optional().describe('Source file path'),
       content: z.string().optional().describe('Section markdown content'),
       totalLength: z.number().optional().describe('Total content length in characters'),
@@ -247,20 +270,14 @@ server.registerTool(
       const content = section.content.slice(offset, offset + limit);
       const hasMore = offset + limit < totalLength;
 
-      const relatedKeys = wiki
-        .getAllKeys()
-        .filter(
-          (k) =>
-            k !== key &&
-            (k.startsWith(key.split('-').slice(0, 2).join('-')) || key.startsWith(k.split('-').slice(0, 2).join('-')))
-        )
-        .slice(0, 5);
+      const relatedKeys = wiki.getRelatedKeys(key);
 
       logger.info('get_wiki_section', { key, contentLength: content.length, totalLength });
 
       return withContent({
         title: section.title,
         parent: section.parent,
+        breadcrumbs: section.breadcrumbs,
         source: section.filePath,
         content,
         totalLength,
@@ -268,7 +285,7 @@ server.registerTool(
         limit,
         hasMore,
         nextOffset: hasMore ? offset + limit : undefined,
-        relatedSections: relatedKeys.map((k) => ({ key: k, title: wiki.getMeta(k).title })),
+        relatedSections: relatedKeys.map((k) => ({ key: k, title: wiki.getMeta(k)?.title })),
       });
     } catch (err) {
       logger.error('get_wiki_section failed', { key, error: err.message });
@@ -294,9 +311,11 @@ server.registerTool(
           key: z.string().describe('Section slug key'),
           title: z.string().describe('Section display title'),
           parent: z.string().describe('Parent topic name'),
+          breadcrumbs: z.array(z.string()).describe('Heading hierarchy from root to parent'),
           source: z.string().describe('Source file path'),
           content: z.string().describe('Section markdown content'),
           truncated: z.boolean().describe('Whether content was truncated'),
+          totalLength: z.number().optional().describe('Total content length (present when truncated)'),
         }),
         z.object({
           key: z.string().describe('Requested section slug key'),
@@ -305,46 +324,67 @@ server.registerTool(
       ])).describe('Retrieved sections; error field present if section not found'),
       successCount: z.number().describe('Number of successfully retrieved sections'),
       errorCount: z.number().describe('Number of sections that failed'),
+      error: z.string().optional().describe('Error message if request failed'),
     },
     annotations: readOnlyAnnotations,
   },
   async ({ keys }) => {
     try {
       requestCounts.get_wiki_sections++;
-      const invalidKeys = keys.map(validateKey).filter(Boolean);
-      if (invalidKeys.length > 0) {
-        logger.warn('get_wiki_sections invalid keys', { keys });
-        return withContent({ sections: keys.map((k) => ({ key: k, error: `Invalid key format: "${k}"` })), successCount: 0, errorCount: keys.length });
+
+      // B1 fix: validate each key individually, only reject invalid ones
+      const keyErrors = new Map();
+      for (const k of keys) {
+        const err = validateKey(k);
+        if (err) keyErrors.set(k, err);
       }
 
-      const sections = wiki.getSections(keys);
+      const validKeys = keys.filter((k) => !keyErrors.has(k));
+      const sections = validKeys.length > 0 ? wiki.getSections(validKeys) : [];
       const success = sections.filter((s) => !s.error);
       const errors = sections.filter((s) => s.error);
-      if (errors.length > 0) {
-        logger.warn('get_wiki_sections partial errors', { failedKeys: errors.map((s) => s.key) });
+
+      if (keyErrors.size > 0 || errors.length > 0) {
+        logger.warn('get_wiki_sections partial errors', {
+          invalidKeys: [...keyErrors.keys()],
+          notFoundKeys: errors.map((s) => s.key),
+        });
       }
 
+      // Build combined results: invalid-key errors + lookup errors + successes
+      const allSections = keys.map((k) => {
+        // Key format validation error
+        if (keyErrors.has(k)) {
+          return { key: k, error: keyErrors.get(k) };
+        }
+        // Lookup result
+        const section = sections.find((s) => s.key === k);
+        if (!section || section.error) {
+          return { key: k, error: section?.error || `Section '${k}' not found` };
+        }
+        const truncated = section.content.length > MAX_CONTENT_LENGTH;
+        const content = truncated ? section.content.slice(0, MAX_CONTENT_LENGTH) : section.content;
+        return {
+          key: section.key,
+          title: section.title,
+          parent: section.parent,
+          breadcrumbs: section.breadcrumbs,
+          source: section.filePath,
+          content,
+          truncated,
+          totalLength: truncated ? section.content.length : undefined,
+        };
+      });
+
+      const totalErrors = keyErrors.size + errors.length;
+
       const result = {
-        sections: sections.map((s) => {
-          if (s.error) {
-            return { key: s.key, error: s.error };
-          }
-          const truncated = s.content.length > MAX_CONTENT_LENGTH;
-          const content = truncated ? s.content.slice(0, MAX_CONTENT_LENGTH) : s.content;
-          return {
-            key: s.key,
-            title: s.title,
-            parent: s.parent,
-            source: s.filePath,
-            content,
-            truncated,
-          };
-        }),
-        successCount: success.length,
-        errorCount: errors.length,
+        sections: allSections,
+        successCount: keys.length - totalErrors,
+        errorCount: totalErrors,
       };
 
-      logger.info('get_wiki_sections', { requested: keys.length, success: success.length, errors: errors.length });
+      logger.info('get_wiki_sections', { requested: keys.length, success: keys.length - totalErrors, errors: totalErrors });
 
       return withContent(result);
     } catch (err) {

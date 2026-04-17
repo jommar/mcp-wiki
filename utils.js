@@ -151,6 +151,8 @@ export class WikiParser {
   #legacyAliasToCanonical = new Map();
   #legacyAmbiguous = new Set();
   #legacyWarningShown = new Set();
+  #contentIndex = {};   // key -> lowercase content string for fast search
+  #relatedMap = {};     // key -> array of related keys
 
   /**
    * @param {string} sourcePath
@@ -162,7 +164,7 @@ export class WikiParser {
     const { resolved, type } = resolveSafePath(sourcePath);
     this.#sourcePath = resolved;
     this.#sourceType = type;
-    this.#loadMarkdown();
+    this.#documents = this.#loadMarkdown();
     this.#buildIndex();
 
     if (watch) this.#startWatcher();
@@ -176,7 +178,7 @@ export class WikiParser {
    */
   static async create(sourcePath, { watch = false } = {}) {
     const parser = new WikiParser(sourcePath, { watch: false });
-    await parser.#loadMarkdownAsync();
+    parser.#documents = await parser.#loadMarkdownAsync();
     await parser.#buildIndexAsync();
     if (watch) parser.#startWatcher();
     return parser;
@@ -242,18 +244,21 @@ export class WikiParser {
 
   #loadMarkdown() {
     try {
+      let documents;
       if (this.#sourceType === 'file') {
-        this.#documents = this.#loadDocumentsSync([this.#sourcePath]);
+        documents = this.#loadDocumentsSync([this.#sourcePath]);
       } else {
         const filePaths = collectMarkdownFiles(this.#sourcePath);
-        this.#documents = this.#loadDocumentsSync(filePaths);
+        documents = this.#loadDocumentsSync(filePaths);
       }
 
       logger.debug('Loaded wiki source', {
         path: this.#sourcePath,
         type: this.#sourceType,
-        files: this.#documents.length,
+        files: documents.length,
       });
+
+      return documents;
     } catch (err) {
       if (err.message.includes('exceeds')) throw err;
       throw new Error(`Could not load wiki at "${this.#sourcePath}": ${err.message}`);
@@ -262,18 +267,21 @@ export class WikiParser {
 
   async #loadMarkdownAsync() {
     try {
+      let documents;
       if (this.#sourceType === 'file') {
-        this.#documents = await this.#loadDocumentsAsync([this.#sourcePath]);
+        documents = await this.#loadDocumentsAsync([this.#sourcePath]);
       } else {
         const filePaths = collectMarkdownFiles(this.#sourcePath);
-        this.#documents = await this.#loadDocumentsAsync(filePaths);
+        documents = await this.#loadDocumentsAsync(filePaths);
       }
 
       logger.debug('Loaded wiki source (async)', {
         path: this.#sourcePath,
         type: this.#sourceType,
-        files: this.#documents.length,
+        files: documents.length,
       });
+
+      return documents;
     } catch (err) {
       if (err.message.includes('exceeds')) throw err;
       throw new Error(`Could not load wiki at "${this.#sourcePath}": ${err.message}`);
@@ -385,35 +393,70 @@ export class WikiParser {
   #buildIndex() {
     if (!this.#documents.length) return;
 
-    this.#index = {};
+    const index = {};
     const slugCounts = {};
     const legacySlugCounts = {};
-    this.#legacyAliasToCanonical.clear();
-    this.#legacyAmbiguous.clear();
-    this.#legacyWarningShown.clear();
+    const legacyAliasToCanonical = new Map();
+    const legacyAmbiguous = new Set();
+
+    // Temporarily swap index and alias maps so #buildIndexForDocument writes into locals
+    const prevIndex = this.#index;
+    const prevAlias = this.#legacyAliasToCanonical;
+    const prevAmbiguous = this.#legacyAmbiguous;
+    this.#index = index;
+    this.#legacyAliasToCanonical = legacyAliasToCanonical;
+    this.#legacyAmbiguous = legacyAmbiguous;
 
     for (const document of this.#documents) {
       this.#buildIndexForDocument(document, slugCounts, legacySlugCounts);
     }
 
-    logger.debug('Built index', { sections: Object.keys(this.#index).length, files: this.#documents.length });
+    // Build content index and related-sections map from the new index
+    const contentIndex = this.#buildContentIndex();
+    const relatedMap = this.#buildRelatedMap();
+
+    // Atomic swap — readers never see an empty/partial state
+    this.#index = index;
+    this.#legacyAliasToCanonical = legacyAliasToCanonical;
+    this.#legacyAmbiguous = legacyAmbiguous;
+    this.#legacyWarningShown.clear();
+    this.#contentIndex = contentIndex;
+    this.#relatedMap = relatedMap;
+
+    logger.debug('Built index', { sections: Object.keys(index).length, files: this.#documents.length });
   }
 
   async #buildIndexAsync() {
     if (!this.#documents.length) return;
 
-    this.#index = {};
+    const index = {};
     const slugCounts = {};
     const legacySlugCounts = {};
-    this.#legacyAliasToCanonical.clear();
-    this.#legacyAmbiguous.clear();
-    this.#legacyWarningShown.clear();
+    const legacyAliasToCanonical = new Map();
+    const legacyAmbiguous = new Set();
+
+    const prevIndex = this.#index;
+    const prevAlias = this.#legacyAliasToCanonical;
+    const prevAmbiguous = this.#legacyAmbiguous;
+    this.#index = index;
+    this.#legacyAliasToCanonical = legacyAliasToCanonical;
+    this.#legacyAmbiguous = legacyAmbiguous;
 
     for (const document of this.#documents) {
       this.#buildIndexForDocument(document, slugCounts, legacySlugCounts);
     }
 
-    logger.debug('Built index (async)', { sections: Object.keys(this.#index).length, files: this.#documents.length });
+    const contentIndex = this.#buildContentIndex();
+    const relatedMap = this.#buildRelatedMap();
+
+    this.#index = index;
+    this.#legacyAliasToCanonical = legacyAliasToCanonical;
+    this.#legacyAmbiguous = legacyAmbiguous;
+    this.#legacyWarningShown.clear();
+    this.#contentIndex = contentIndex;
+    this.#relatedMap = relatedMap;
+
+    logger.debug('Built index (async)', { sections: Object.keys(index).length, files: this.#documents.length });
   }
 
   #assignPositions(document, headingOrder) {
@@ -433,6 +476,49 @@ export class WikiParser {
         logger.warn('Heading not found in raw markdown', { key: h.key, text: h.text, filePath: document.filePath });
       }
     });
+  }
+
+  /**
+   * Build a lowercase content index for fast search without calling getSection().
+   * Stores key -> { lower: string, length: number } for each section.
+   */
+  #buildContentIndex() {
+    const contentIndex = {};
+    for (const [key, meta] of Object.entries(this.#index)) {
+      if (meta.start === undefined) continue;
+
+      const sourceDocument = this.#documents.find((d) => d.filePath === meta.filePath);
+      if (!sourceDocument) continue;
+
+      const headingLineEnd = sourceDocument.rawMarkdown.indexOf('\n', meta.start);
+      const contentStart = headingLineEnd === -1 ? meta.end : headingLineEnd + 1;
+      let content = sourceDocument.rawMarkdown.slice(contentStart, meta.end).trim();
+      content = content.replace(/\s*\{#[^}]+\}/g, '');
+
+      contentIndex[key] = { lower: content.toLowerCase(), length: content.length };
+    }
+    return contentIndex;
+  }
+
+  /**
+   * Build a map of key -> related keys based on shared key prefix (first 2 segments).
+   * Pre-computed so get_wiki_section doesn't scan all keys on every call.
+   */
+  #buildRelatedMap() {
+    const prefixGroups = {};
+    for (const key of Object.keys(this.#index)) {
+      const prefix = key.split('-').slice(0, 2).join('-');
+      if (!prefixGroups[prefix]) prefixGroups[prefix] = [];
+      prefixGroups[prefix].push(key);
+    }
+
+    const relatedMap = {};
+    for (const key of Object.keys(this.#index)) {
+      const prefix = key.split('-').slice(0, 2).join('-');
+      const siblings = (prefixGroups[prefix] || []).filter((k) => k !== key);
+      relatedMap[key] = siblings.slice(0, 5);
+    }
+    return relatedMap;
   }
 
   #refreshDirectoryWatchers() {
@@ -523,9 +609,9 @@ export class WikiParser {
   /**
    * @param {string} [query]
    * @param {SearchOptions} [options]
-   * @returns {string[]}
+   * @returns {string[] | { key: string, headerMatch: boolean, contentMatch: boolean }[]}
    */
-  search(query, { fuzzy = false, limit = 20 } = {}) {
+  search(query, { fuzzy = false, limit = 20, detailed = false } = {}) {
     const keys = Object.keys(this.#index);
     if (!query) return keys;
 
@@ -566,15 +652,9 @@ export class WikiParser {
     }
 
     const queryLower = query.toLowerCase();
-    
-    // Helper to check if content contains query (case-insensitive)
-    const contentMatches = (k) => {
-      const section = this.getSection(k);
-      if (!section) return false;
-      return section.content.toLowerCase().includes(queryLower);
-    };
 
     // Score sections: header matches are weighted higher than content matches
+    // Uses pre-built #contentIndex instead of calling getSection() per key
     return keys
       .map((k) => {
         // Check header-based matches (higher priority)
@@ -585,8 +665,8 @@ export class WikiParser {
           this.#index[k].file?.toLowerCase().includes(queryLower) ||
           this.#index[k].fileSlug?.includes(slugify(query));
 
-        // Check content-based match
-        const hasContentMatch = contentMatches(k);
+        // Check content-based match using pre-built index
+        const hasContentMatch = this.#contentIndex[k]?.lower.includes(queryLower) ?? false;
 
         // Return priority score (lower is better): 0 = header match, 1 = content match only
         return {
@@ -599,7 +679,7 @@ export class WikiParser {
       .filter((r) => r.priority >= 0)
       .sort((a, b) => a.priority - b.priority)
       .slice(0, limit)
-      .map((r) => r.key);
+      .map((r) => detailed ? { key: r.key, headerMatch: r.headerMatch, contentMatch: r.contentMatch } : r.key);
   }
 
   /**
@@ -669,16 +749,64 @@ export class WikiParser {
   getMeta(key) {
     const resolvedKey = this.#resolveKey(key, { warnLegacy: true });
     if (!resolvedKey) return null;
-    return this.#index[resolvedKey] || null;
+    const meta = this.#index[resolvedKey] || null;
+    if (!meta) return null;
+    // Attach contentLength from pre-built index
+    const contentLength = this.#contentIndex[resolvedKey]?.length ?? 0;
+    return { ...meta, contentLength };
+  }
+
+  /**
+   * Get related section keys for a given key (pre-computed).
+   * @param {string} key
+   * @returns {string[]}
+   */
+  getRelatedKeys(key) {
+    const resolvedKey = this.#resolveKey(key, { warnLegacy: false });
+    return this.#relatedMap[resolvedKey] || [];
+  }
+
+  /**
+   * Get content length for a section without reading the full content.
+   * @param {string} key
+   * @returns {number}
+   */
+  getContentLength(key) {
+    const resolvedKey = this.#resolveKey(key, { warnLegacy: false });
+    return this.#contentIndex[resolvedKey]?.length ?? 0;
+  }
+
+  /**
+   * Get a content snippet around a search match.
+   * @param {string} key
+   * @param {string} query
+   * @param {number} [radius=100]
+   * @returns {string|undefined}
+   */
+  getSnippet(key, query, radius = 100) {
+    const resolvedKey = this.#resolveKey(key, { warnLegacy: false });
+    const entry = this.#contentIndex[resolvedKey];
+    if (!entry) return undefined;
+
+    const idx = entry.lower.indexOf(query.toLowerCase());
+    if (idx === -1) return undefined;
+
+    const section = this.getSection(key);
+    if (!section) return undefined;
+
+    const start = Math.max(0, idx - radius);
+    const end = Math.min(section.content.length, idx + query.length + radius);
+    const prefix = start > 0 ? '...' : '';
+    const suffix = end < section.content.length ? '...' : '';
+    return prefix + section.content.slice(start, end) + suffix;
   }
 
   reload() {
-    this.#index = {};
-    this.#documents = [];
-    this.#legacyAliasToCanonical.clear();
-    this.#legacyAmbiguous.clear();
-    this.#legacyWarningShown.clear();
-    this.#loadMarkdown();
+    // Build into local vars first, then swap atomically so concurrent
+    // readers never see an empty/partial index.
+    const newDocuments = this.#loadMarkdown();
+    const prevDocuments = this.#documents;
+    this.#documents = newDocuments;
     this.#buildIndex();
   }
 
