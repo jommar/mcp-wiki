@@ -384,7 +384,7 @@ for (const k of invalidKeys) {
 console.log('\n9. Close');
 wiki.close();
 directoryWiki.close();
-logger.close();
+await logger.close();
 assert(true, 'should close without error');
 
 fs.rmSync(fixtureRoot, { recursive: true, force: true });

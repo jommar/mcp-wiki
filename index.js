@@ -19,11 +19,21 @@ function validateKey(key) {
 }
 
 const wiki = new WikiParser(process.env.WIKI_PATH, { watch: true });
+const startedAt = Date.now();
 
 const server = new McpServer({
   name: 'wiki-explorer',
   version: '1.0.0',
 });
+
+// Lightweight request counter for shutdown summary
+const requestCounts = {
+  list_wiki: 0,
+  browse_wiki: 0,
+  search_wiki: 0,
+  get_wiki_section: 0,
+  get_wiki_sections: 0,
+};
 
 const readOnlyAnnotations = { readOnlyHint: true };
 
@@ -58,6 +68,7 @@ server.registerTool(
   },
   async () => {
     try {
+      requestCounts.list_wiki++;
       const keys = wiki.getAllKeys();
       const sections = keys.map((k) => {
         const meta = wiki.getMeta(k);
@@ -100,6 +111,7 @@ server.registerTool(
   },
   async ({ topic }) => {
     try {
+      requestCounts.browse_wiki++;
       const keys = wiki.getAllKeys();
       const filtered = topic
         ? keys.filter((k) => {
@@ -144,6 +156,7 @@ server.registerTool(
   },
   async ({ query, fuzzy }) => {
     try {
+      requestCounts.search_wiki++;
       const results = wiki.search(query, { fuzzy });
 
       if (results.length === 0) {
@@ -210,6 +223,7 @@ server.registerTool(
   },
   async ({ key, offset, limit }) => {
     try {
+      requestCounts.get_wiki_section++;
       const keyError = validateKey(key);
       if (keyError) {
         logger.warn('get_wiki_section invalid key', { key });
@@ -296,6 +310,7 @@ server.registerTool(
   },
   async ({ keys }) => {
     try {
+      requestCounts.get_wiki_sections++;
       const invalidKeys = keys.map(validateKey).filter(Boolean);
       if (invalidKeys.length > 0) {
         logger.warn('get_wiki_sections invalid keys', { keys });
@@ -340,14 +355,44 @@ server.registerTool(
 );
 
 function shutdown() {
-  logger.info('Shutting down');
+  const uptimeSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const totalRequests = Object.values(requestCounts).reduce((a, b) => a + b, 0);
+  const activeTools = Object.entries(requestCounts)
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => `${name}:${count}`)
+    .join(', ');
+
+  logger.info('Shutting down', {
+    uptime: `${uptimeSec}s`,
+    totalRequests,
+    sections: wiki.getAllKeys().length,
+    tools: activeTools || 'none',
+  });
+
   wiki.close();
-  logger.close();
-  process.exit(0);
+  logger.close().then(() => process.exit(0));
 }
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+process.on('exit', () => {
+  // Synchronous fallback for the normal MCP stdio lifecycle:
+  // when the client disconnects, stdin closes and the process exits
+  // without SIGTERM/SIGINT, so the async shutdown handler never fires.
+  const uptimeSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const totalRequests = Object.values(requestCounts).reduce((a, b) => a + b, 0);
+  const activeTools = Object.entries(requestCounts)
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => `${name}:${count}`)
+    .join(', ');
+
+  logger.flushSync('info', 'Shutting down', {
+    uptime: `${uptimeSec}s`,
+    totalRequests,
+    sections: wiki.getAllKeys().length,
+    tools: activeTools || 'none',
+  });
+});
 process.on('uncaughtException', (err) => {
   logger.error('Uncaught exception', { error: err.message, stack: err.stack });
   shutdown();
@@ -357,7 +402,12 @@ process.on('unhandledRejection', (reason) => {
   shutdown();
 });
 
-logger.info('Starting Wiki Explorer MCP Server', { wikiPath: process.env.WIKI_PATH });
+logger.info('Starting Wiki Explorer MCP Server', {
+  wikiPath: process.env.WIKI_PATH,
+  sections: wiki.getAllKeys().length,
+  pid: process.pid,
+  node: process.version,
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

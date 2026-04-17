@@ -123,13 +123,30 @@ export const logger = {
     writeToFile(line);
   },
 
+  /** Write a line synchronously to the log file. Used during process exit when async writes may not flush. */
+  flushSync(level, message, data) {
+    const line = format(level, message, data);
+    console.error(line);
+    try {
+      ensureDir();
+      fs.appendFileSync(path.join(LOG_DIR, logFileName()), line + '\n');
+    } catch {
+      // best-effort; never crash during exit
+    }
+  },
+
   /** Close the active log stream. Call on shutdown. */
   close() {
     clearInterval(maintenanceInterval);
     if (currentStream) {
-      currentStream.end();
-      currentStream = null;
-      currentDate = null;
+      return new Promise((resolve) => {
+        currentStream.end(() => {
+          currentStream = null;
+          currentDate = null;
+          resolve();
+        });
+      });
     }
+    return Promise.resolve();
   },
 };
