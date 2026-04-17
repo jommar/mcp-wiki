@@ -27,6 +27,17 @@ const server = new McpServer({
 
 const readOnlyAnnotations = { readOnlyHint: true };
 
+// MCP requires both `content` (text fallback for older clients) and
+// `structuredContent` (for clients that support outputSchema).  The SDK
+// official example returns both — omitting `content` causes clients that
+// don't understand structuredContent to see empty results.
+function withContent(structured) {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }],
+    structuredContent: structured,
+  };
+}
+
 // Shared output schemas
 const sectionRefSchema = {
   key: z.string().describe('Canonical slug key for the section'),
@@ -55,12 +66,10 @@ server.registerTool(
 
       logger.info('list_wiki', { count: keys.length });
 
-      return {
-        structuredContent: { sections, count: keys.length },
-      };
+      return withContent({ sections, count: keys.length });
     } catch (err) {
       logger.error('list_wiki failed', { error: err.message });
-      return { structuredContent: { error: err.message } };
+      return withContent({ error: err.message });
     }
   }
 );
@@ -110,12 +119,10 @@ server.registerTool(
 
       logger.info('browse_wiki', { topic, count: filtered.length });
 
-      return {
-        structuredContent: { groups, count: filtered.length },
-      };
+      return withContent({ groups, count: filtered.length });
     } catch (err) {
       logger.error('browse_wiki failed', { topic, error: err.message });
-      return { structuredContent: { groups: [], count: 0, error: err.message } };
+      return withContent({ groups: [], count: 0, error: err.message });
     }
   }
 );
@@ -145,9 +152,7 @@ server.registerTool(
 
         logger.info('search_wiki no results', { query });
 
-        return {
-          structuredContent: { results: [], count: 0, suggestions: suggestions.length > 0 ? suggestions : undefined },
-        };
+        return withContent({ results: [], count: 0, suggestions: suggestions.length > 0 ? suggestions : undefined });
       }
 
       const formattedResults = results.map((k) => {
@@ -157,12 +162,10 @@ server.registerTool(
 
       logger.info('search_wiki', { query, count: results.length });
 
-      return {
-        structuredContent: { results: formattedResults, count: results.length },
-      };
+      return withContent({ results: formattedResults, count: results.length });
     } catch (err) {
       logger.error('search_wiki failed', { query, error: err.message });
-      return { structuredContent: { results: [], count: 0, error: err.message } };
+      return withContent({ results: [], count: 0, error: err.message });
     }
   }
 );
@@ -210,9 +213,7 @@ server.registerTool(
       const keyError = validateKey(key);
       if (keyError) {
         logger.warn('get_wiki_section invalid key', { key });
-        return {
-          structuredContent: { error: keyError },
-        };
+        return withContent({ error: keyError });
       }
 
       const section = wiki.getSection(key);
@@ -222,12 +223,10 @@ server.registerTool(
 
         logger.warn('get_wiki_section not found', { key });
 
-        return {
-          structuredContent: {
-            error: `Section '${key}' not found`,
-            suggestions: suggestions.length > 0 ? suggestions : undefined,
-          },
-        };
+        return withContent({
+          error: `Section '${key}' not found`,
+          suggestions: suggestions.length > 0 ? suggestions : undefined,
+        });
       }
 
       const totalLength = section.content.length;
@@ -245,23 +244,21 @@ server.registerTool(
 
       logger.info('get_wiki_section', { key, contentLength: content.length, totalLength });
 
-      return {
-        structuredContent: {
-          title: section.title,
-          parent: section.parent,
-          source: section.filePath,
-          content,
-          totalLength,
-          offset,
-          limit,
-          hasMore,
-          nextOffset: hasMore ? offset + limit : undefined,
-          relatedSections: relatedKeys.map((k) => ({ key: k, title: wiki.getMeta(k).title })),
-        },
-      };
+      return withContent({
+        title: section.title,
+        parent: section.parent,
+        source: section.filePath,
+        content,
+        totalLength,
+        offset,
+        limit,
+        hasMore,
+        nextOffset: hasMore ? offset + limit : undefined,
+        relatedSections: relatedKeys.map((k) => ({ key: k, title: wiki.getMeta(k).title })),
+      });
     } catch (err) {
       logger.error('get_wiki_section failed', { key, error: err.message });
-      return { structuredContent: { error: err.message } };
+      return withContent({ error: err.message });
     }
   }
 );
@@ -302,9 +299,7 @@ server.registerTool(
       const invalidKeys = keys.map(validateKey).filter(Boolean);
       if (invalidKeys.length > 0) {
         logger.warn('get_wiki_sections invalid keys', { keys });
-        return {
-          structuredContent: { sections: keys.map((k) => ({ key: k, error: `Invalid key format: "${k}"` })), successCount: 0, errorCount: keys.length },
-        };
+        return withContent({ sections: keys.map((k) => ({ key: k, error: `Invalid key format: "${k}"` })), successCount: 0, errorCount: keys.length });
       }
 
       const sections = wiki.getSections(keys);
@@ -336,12 +331,10 @@ server.registerTool(
 
       logger.info('get_wiki_sections', { requested: keys.length, success: success.length, errors: errors.length });
 
-      return {
-        structuredContent: result,
-      };
+      return withContent(result);
     } catch (err) {
       logger.error('get_wiki_sections failed', { keys, error: err.message });
-      return { structuredContent: { sections: [], successCount: 0, errorCount: keys.length, error: err.message } };
+      return withContent({ sections: [], successCount: 0, errorCount: keys.length, error: err.message });
     }
   }
 );
