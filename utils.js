@@ -801,6 +801,24 @@ export class WikiParser {
     return prefix + section.content.slice(start, end) + suffix;
   }
 
+  /**
+   * Get the absolute path to the wiki source.
+   * @returns {string}
+   */
+  get sourcePath() { return this.#sourcePath; }
+
+  /**
+   * Get the source type — 'file' or 'directory'.
+   * @returns {string}
+   */
+  get sourceType() { return this.#sourceType; }
+
+  /**
+   * Get the number of markdown files loaded.
+   * @returns {number}
+   */
+  get documentCount() { return this.#documents.length; }
+
   reload() {
     // Build into local vars first, then swap atomically so concurrent
     // readers never see an empty/partial index.

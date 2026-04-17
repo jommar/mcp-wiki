@@ -33,6 +33,7 @@ const requestCounts = {
   search_wiki: 0,
   get_wiki_section: 0,
   get_wiki_sections: 0,
+  get_wiki_info: 0,
 };
 
 const readOnlyAnnotations = { readOnlyHint: true };
@@ -390,6 +391,37 @@ server.registerTool(
     } catch (err) {
       logger.error('get_wiki_sections failed', { keys, error: err.message });
       return withContent({ sections: [], successCount: 0, errorCount: keys.length, error: err.message });
+    }
+  }
+);
+
+server.registerTool(
+  'get_wiki_info',
+  {
+    description: 'Get metadata about the connected wiki instance — path, mode (file/directory), and section count.',
+    inputSchema: {},
+    outputSchema: {
+      wikiPath: z.string().describe('Absolute path to the wiki source'),
+      mode: z.enum(['file', 'directory']).describe('How the wiki is loaded — single file or directory of .md files'),
+      sectionCount: z.number().describe('Total number of indexed sections'),
+      documentCount: z.number().describe('Number of markdown files loaded (1 in file mode, N in directory mode)'),
+      uptime: z.number().describe('Server uptime in seconds'),
+    },
+    annotations: readOnlyAnnotations,
+  },
+  async () => {
+    try {
+      requestCounts.get_wiki_info++;
+      return withContent({
+        wikiPath: wiki.sourcePath,
+        mode: wiki.sourceType,
+        sectionCount: wiki.getAllKeys().length,
+        documentCount: wiki.documentCount,
+        uptime: (Date.now() - startedAt) / 1000,
+      });
+    } catch (err) {
+      logger.error('get_wiki_info failed', { error: err.message });
+      return withContent({ error: err.message });
     }
   }
 );
