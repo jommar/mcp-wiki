@@ -1,5 +1,6 @@
 import { config } from 'dotenv';
 import { WikiParser } from './utils.js';
+import { logger } from './logger.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -364,6 +365,7 @@ for (const k of invalidKeys) {
 console.log('\n9. Close');
 wiki.close();
 directoryWiki.close();
+logger.close();
 assert(true, 'should close without error');
 
 fs.rmSync(fixtureRoot, { recursive: true, force: true });

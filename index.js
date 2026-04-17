@@ -27,27 +27,41 @@ const server = new McpServer({
 
 const readOnlyAnnotations = { readOnlyHint: true };
 
+// Shared output schemas
+const sectionRefSchema = {
+  key: z.string().describe('Canonical slug key for the section'),
+  parent: z.string().describe('Parent topic/group name'),
+  title: z.string().describe('Display title of the section'),
+};
+
 server.registerTool(
   'list_wiki',
   {
     description: 'List all available wiki section keys. Use browse_wiki instead for topic-filtered results.',
     inputSchema: {},
+    outputSchema: {
+      sections: z.array(z.object(sectionRefSchema)).describe('All wiki sections'),
+      count: z.number().describe('Total number of sections'),
+    },
     annotations: readOnlyAnnotations,
   },
   async () => {
-    const keys = wiki.getAllKeys();
-    const formattedList = keys
-      .map((k) => {
+    try {
+      const keys = wiki.getAllKeys();
+      const sections = keys.map((k) => {
         const meta = wiki.getMeta(k);
-        return `- ${k} (${meta.parent} > ${meta.title})`;
-      })
-      .join('\n');
+        return { key: k, parent: meta.parent, title: meta.title };
+      });
 
-    logger.debug('list_wiki called', { count: keys.length });
+      logger.info('list_wiki', { count: keys.length });
 
-    return {
-      content: [{ type: 'text', text: `All wiki sections (${keys.length}):\n${formattedList}` }],
-    };
+      return {
+        structuredContent: { sections, count: keys.length },
+      };
+    } catch (err) {
+      logger.error('list_wiki failed', { error: err.message });
+      return { structuredContent: { error: err.message } };
+    }
   }
 );
 
@@ -62,36 +76,47 @@ server.registerTool(
         .optional()
         .describe('Filter by parent topic (e.g., "Portage Backend", "Approval Workflow Deep Dive")'),
     },
+    outputSchema: {
+      groups: z.array(z.object({
+        parent: z.string().describe('Parent topic name'),
+        sections: z.array(z.object({
+          key: z.string().describe('Canonical slug key'),
+          title: z.string().describe('Display title'),
+          depth: z.number().describe('Heading depth (2 = H2, 3 = H3, etc.)'),
+        })),
+      })).describe('Sections grouped by parent topic'),
+      count: z.number().describe('Total number of matching sections'),
+    },
     annotations: readOnlyAnnotations,
   },
   async ({ topic }) => {
-    const keys = wiki.getAllKeys();
-    const filtered = topic
-      ? keys.filter((k) => {
-          const meta = wiki.getMeta(k);
-          return meta.parent.toLowerCase().includes(topic.toLowerCase()) || k.includes(topic.toLowerCase());
-        })
-      : keys;
+    try {
+      const keys = wiki.getAllKeys();
+      const filtered = topic
+        ? keys.filter((k) => {
+            const meta = wiki.getMeta(k);
+            return meta.parent.toLowerCase().includes(topic.toLowerCase()) || k.includes(topic.toLowerCase());
+          })
+        : keys;
 
-    const byParent = {};
-    for (const k of filtered) {
-      const meta = wiki.getMeta(k);
-      if (!byParent[meta.parent]) byParent[meta.parent] = [];
-      byParent[meta.parent].push({ key: k, title: meta.title, depth: meta.depth });
+      const byParent = {};
+      for (const k of filtered) {
+        const meta = wiki.getMeta(k);
+        if (!byParent[meta.parent]) byParent[meta.parent] = [];
+        byParent[meta.parent].push({ key: k, title: meta.title, depth: meta.depth });
+      }
+
+      const groups = Object.entries(byParent).map(([parent, sections]) => ({ parent, sections }));
+
+      logger.info('browse_wiki', { topic, count: filtered.length });
+
+      return {
+        structuredContent: { groups, count: filtered.length },
+      };
+    } catch (err) {
+      logger.error('browse_wiki failed', { topic, error: err.message });
+      return { structuredContent: { groups: [], count: 0, error: err.message } };
     }
-
-    const formatted = Object.entries(byParent)
-      .map(([parent, sections]) => {
-        const lines = sections.map((s) => `  - ${s.key} (H${s.depth}: ${s.title})`);
-        return `## ${parent}\n${lines.join('\n')}`;
-      })
-      .join('\n\n');
-
-    logger.debug('browse_wiki', { topic, count: filtered.length });
-
-    return {
-      content: [{ type: 'text', text: `Found ${filtered.length} section(s):\n\n${formatted}` }],
-    };
   }
 );
 
@@ -103,35 +128,42 @@ server.registerTool(
       query: z.string().min(1).max(200).describe('Keyword to search'),
       fuzzy: z.boolean().optional().default(false).describe('Enable fuzzy matching for typos'),
     },
+    outputSchema: {
+      results: z.array(z.object(sectionRefSchema)).describe('Matching sections, header matches first'),
+      count: z.number().describe('Number of results'),
+      suggestions: z.array(z.string()).optional().describe('Similar keys when no results found'),
+    },
     annotations: readOnlyAnnotations,
   },
   async ({ query, fuzzy }) => {
-    const results = wiki.search(query, { fuzzy });
+    try {
+      const results = wiki.search(query, { fuzzy });
 
-    if (results.length === 0) {
-      const similar = wiki.findSimilar(query);
-      const suggestion =
-        similar.length > 0 ? `\n\nDid you mean one of these?\n${similar.map((s) => `- ${s.key}`).join('\n')}` : '';
+      if (results.length === 0) {
+        const similar = wiki.findSimilar(query);
+        const suggestions = similar.map((s) => s.key);
 
-      logger.debug('search_wiki no results', { query });
+        logger.info('search_wiki no results', { query });
+
+        return {
+          structuredContent: { results: [], count: 0, suggestions: suggestions.length > 0 ? suggestions : undefined },
+        };
+      }
+
+      const formattedResults = results.map((k) => {
+        const meta = wiki.getMeta(k);
+        return { key: k, parent: meta.parent, title: meta.title };
+      });
+
+      logger.info('search_wiki', { query, count: results.length });
 
       return {
-        content: [{ type: 'text', text: `No matches found for "${query}".${suggestion}` }],
+        structuredContent: { results: formattedResults, count: results.length },
       };
+    } catch (err) {
+      logger.error('search_wiki failed', { query, error: err.message });
+      return { structuredContent: { results: [], count: 0, error: err.message } };
     }
-
-    const formattedList = results
-      .map((k) => {
-        const meta = wiki.getMeta(k);
-        return `- ${k} (${meta.parent} > ${meta.title})`;
-      })
-      .join('\n');
-
-    logger.debug('search_wiki', { query, count: results.length });
-
-    return {
-      content: [{ type: 'text', text: `Found ${results.length} section(s):\n${formattedList}` }],
-    };
   }
 );
 
@@ -154,63 +186,83 @@ server.registerTool(
           `Max characters to return. Default is ${MAX_CONTENT_LENGTH} but you can set it higher to get the full content in one call.`
         ),
     },
+    outputSchema: {
+      title: z.string().optional().describe('Section display title'),
+      parent: z.string().optional().describe('Parent topic name'),
+      source: z.string().optional().describe('Source file path'),
+      content: z.string().optional().describe('Section markdown content'),
+      totalLength: z.number().optional().describe('Total content length in characters'),
+      offset: z.number().optional().describe('Current character offset'),
+      limit: z.number().optional().describe('Applied character limit'),
+      hasMore: z.boolean().optional().describe('Whether more content exists beyond this page'),
+      nextOffset: z.number().optional().describe('Offset for the next page, if hasMore is true'),
+      relatedSections: z.array(z.object({
+        key: z.string().describe('Related section key'),
+        title: z.string().describe('Related section title'),
+      })).optional().describe('Related sections by key prefix'),
+      error: z.string().optional().describe('Error message if section not found or key invalid'),
+      suggestions: z.array(z.string()).optional().describe('Similar keys when section not found'),
+    },
     annotations: readOnlyAnnotations,
   },
   async ({ key, offset, limit }) => {
-    const keyError = validateKey(key);
-    if (keyError) {
-      return {
-        content: [{ type: 'text', text: keyError }],
-      };
-    }
+    try {
+      const keyError = validateKey(key);
+      if (keyError) {
+        logger.warn('get_wiki_section invalid key', { key });
+        return {
+          structuredContent: { error: keyError },
+        };
+      }
 
-    const section = wiki.getSection(key);
-    if (!section) {
-      const similar = wiki.findSimilar(key);
-      const suggestion =
-        similar.length > 0 ? `\n\nDid you mean one of these?\n${similar.map((s) => `- ${s.key}`).join('\n')}` : '';
+      const section = wiki.getSection(key);
+      if (!section) {
+        const similar = wiki.findSimilar(key);
+        const suggestions = similar.map((s) => s.key);
 
-      logger.debug('get_wiki_section not found', { key });
+        logger.warn('get_wiki_section not found', { key });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Section '${key}' not found.${suggestion}\n\nUse list_wiki or search_wiki to find valid keys.`,
+        return {
+          structuredContent: {
+            error: `Section '${key}' not found`,
+            suggestions: suggestions.length > 0 ? suggestions : undefined,
           },
-        ],
+        };
+      }
+
+      const totalLength = section.content.length;
+      const content = section.content.slice(offset, offset + limit);
+      const hasMore = offset + limit < totalLength;
+
+      const relatedKeys = wiki
+        .getAllKeys()
+        .filter(
+          (k) =>
+            k !== key &&
+            (k.startsWith(key.split('-').slice(0, 2).join('-')) || key.startsWith(k.split('-').slice(0, 2).join('-')))
+        )
+        .slice(0, 5);
+
+      logger.info('get_wiki_section', { key, contentLength: content.length, totalLength });
+
+      return {
+        structuredContent: {
+          title: section.title,
+          parent: section.parent,
+          source: section.filePath,
+          content,
+          totalLength,
+          offset,
+          limit,
+          hasMore,
+          nextOffset: hasMore ? offset + limit : undefined,
+          relatedSections: relatedKeys.map((k) => ({ key: k, title: wiki.getMeta(k).title })),
+        },
       };
+    } catch (err) {
+      logger.error('get_wiki_section failed', { key, error: err.message });
+      return { structuredContent: { error: err.message } };
     }
-
-    const totalLength = section.content.length;
-    const content = section.content.slice(offset, offset + limit);
-    const hasMore = offset + limit < totalLength;
-
-    const relatedKeys = wiki
-      .getAllKeys()
-      .filter(
-        (k) =>
-          k !== key &&
-          (k.startsWith(key.split('-').slice(0, 2).join('-')) || key.startsWith(k.split('-').slice(0, 2).join('-')))
-      )
-      .slice(0, 5);
-
-    let output = `### ${section.parent} > ${section.title}\n\n${content}`;
-
-    if (hasMore) {
-      const nextOffset = offset + limit;
-      output += `\n\n---\n[Content truncated. ${totalLength - nextOffset} characters remaining. Use offset: ${nextOffset} to continue.]`;
-    }
-
-    if (relatedKeys.length > 0) {
-      output += `\n\n---\nRelated sections:\n${relatedKeys.map((k) => `- ${k} (${wiki.getMeta(k).title})`).join('\n')}`;
-    }
-
-    logger.debug('get_wiki_section', { key, contentLength: content.length, totalLength });
-
-    return {
-      content: [{ type: 'text', text: output }],
-    };
   }
 );
 
@@ -225,50 +277,79 @@ server.registerTool(
         .max(MAX_BATCH_KEYS)
         .describe(`Array of section slug keys to retrieve (max ${MAX_BATCH_KEYS})`),
     },
+    outputSchema: {
+      sections: z.array(z.union([
+        z.object({
+          key: z.string().describe('Section slug key'),
+          title: z.string().describe('Section display title'),
+          parent: z.string().describe('Parent topic name'),
+          source: z.string().describe('Source file path'),
+          content: z.string().describe('Section markdown content'),
+          truncated: z.boolean().describe('Whether content was truncated'),
+        }),
+        z.object({
+          key: z.string().describe('Requested section slug key'),
+          error: z.string().describe('Error message'),
+        }),
+      ])).describe('Retrieved sections; error field present if section not found'),
+      successCount: z.number().describe('Number of successfully retrieved sections'),
+      errorCount: z.number().describe('Number of sections that failed'),
+    },
     annotations: readOnlyAnnotations,
   },
   async ({ keys }) => {
-    const invalidKeys = keys.map(validateKey).filter(Boolean);
-    if (invalidKeys.length > 0) {
-      return {
-        content: [{ type: 'text', text: `Invalid keys:\n${invalidKeys.join('\n')}` }],
+    try {
+      const invalidKeys = keys.map(validateKey).filter(Boolean);
+      if (invalidKeys.length > 0) {
+        logger.warn('get_wiki_sections invalid keys', { keys });
+        return {
+          structuredContent: { sections: keys.map((k) => ({ key: k, error: `Invalid key format: "${k}"` })), successCount: 0, errorCount: keys.length },
+        };
+      }
+
+      const sections = wiki.getSections(keys);
+      const success = sections.filter((s) => !s.error);
+      const errors = sections.filter((s) => s.error);
+      if (errors.length > 0) {
+        logger.warn('get_wiki_sections partial errors', { failedKeys: errors.map((s) => s.key) });
+      }
+
+      const result = {
+        sections: sections.map((s) => {
+          if (s.error) {
+            return { key: s.key, error: s.error };
+          }
+          const truncated = s.content.length > MAX_CONTENT_LENGTH;
+          const content = truncated ? s.content.slice(0, MAX_CONTENT_LENGTH) : s.content;
+          return {
+            key: s.key,
+            title: s.title,
+            parent: s.parent,
+            source: s.filePath,
+            content,
+            truncated,
+          };
+        }),
+        successCount: success.length,
+        errorCount: errors.length,
       };
+
+      logger.info('get_wiki_sections', { requested: keys.length, success: success.length, errors: errors.length });
+
+      return {
+        structuredContent: result,
+      };
+    } catch (err) {
+      logger.error('get_wiki_sections failed', { keys, error: err.message });
+      return { structuredContent: { sections: [], successCount: 0, errorCount: keys.length, error: err.message } };
     }
-
-    const sections = wiki.getSections(keys);
-    const success = sections.filter((s) => !s.error);
-    const errors = sections.filter((s) => s.error);
-
-    let output = '';
-
-    if (errors.length > 0) {
-      output += `Errors (${errors.length}):\n${errors.map((e) => `- ${e.error}`).join('\n')}\n\n`;
-    }
-
-    if (success.length > 0) {
-      output += success
-        .map((s) => {
-          const content =
-            s.content.length > MAX_CONTENT_LENGTH
-              ? s.content.slice(0, MAX_CONTENT_LENGTH) +
-                `\n\n[Truncated. ${s.content.length - MAX_CONTENT_LENGTH} more characters.]`
-              : s.content;
-          return `## ${s.parent} > ${s.title}\n\n${content}`;
-        })
-        .join('\n\n---\n\n');
-    }
-
-    logger.debug('get_wiki_sections', { requested: keys.length, success: success.length, errors: errors.length });
-
-    return {
-      content: [{ type: 'text', text: output || 'No sections found.' }],
-    };
   }
 );
 
 function shutdown() {
   logger.info('Shutting down');
   wiki.close();
+  logger.close();
   process.exit(0);
 }
 
