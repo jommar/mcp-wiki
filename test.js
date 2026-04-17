@@ -217,6 +217,13 @@ assert(meta.end !== undefined && meta.end !== null, 'should have end position');
 const missingMeta = wiki.getMeta('does-not-exist');
 assert(missingMeta === null, 'should return null for invalid key');
 
+console.log('\n3a. Canonical keys (directory mode)');
+const canonicalDirMeta = directoryWiki.getMeta('user-wiki-approval-workflow-deep-dive-determining-fully-approved');
+assert(canonicalDirMeta !== null, 'should return meta for canonical key in directory mode');
+assert(canonicalDirMeta.title === 'Determining "Fully Approved"', 'canonical key should have correct title');
+assert(canonicalDirMeta.fileSlug === 'user-wiki', 'canonical key should have correct fileSlug');
+
+console.log('\n3b. Legacy key compatibility');
 const legacyMeta = directoryWiki.getMeta('approval-workflow-deep-dive-determining-fully-approved');
 assert(legacyMeta !== null, 'should resolve legacy key for meta lookup in directory mode');
 assert(
@@ -241,6 +248,12 @@ assert(section.content.includes('fullyApproved'), 'should contain expected keywo
 const missingSection = wiki.getSection('does-not-exist');
 assert(missingSection === null, 'should return null for invalid key');
 
+console.log('\n4c. Canonical keys (directory mode)');
+const canonicalDirSection = directoryWiki.getSection('user-wiki-approval-workflow-deep-dive-determining-fully-approved');
+assert(canonicalDirSection !== null, 'should return section for canonical key in directory mode');
+assert(canonicalDirSection.content.includes('prefixed keys'), 'canonical key section should have content');
+
+console.log('\n4d. Legacy key compatibility');
 const legacySection = directoryWiki.getSection('approval-workflow-deep-dive-determining-fully-approved');
 assert(legacySection !== null, 'should resolve legacy key for section lookup in directory mode');
 assert(
@@ -345,7 +358,13 @@ assert(gettingStartedSection.content.includes('Welcome to the guide'), 'should h
 // Verify title stripping
 assert(gettingStartedSection.title === 'Getting Started', 'title should not have anchor suffix');
 
+// Verify canonical nested key works directly
+const quickStartCanonical = customAnchorWiki.getMeta('getting-started-quick-start');
+assert(quickStartCanonical !== null, 'should find nested section by canonical custom anchor key');
+assert(quickStartCanonical.title === 'Quick Start', 'canonical custom anchor key should have correct title');
+
 // Verify legacy alias registration (quick-start resolves to nested key)
+console.log('\n8b. Custom anchor legacy alias');
 const quickStartLegacy = customAnchorWiki.getMeta('quick-start');
 assert(quickStartLegacy !== null, 'should resolve custom anchor as legacy alias');
 assert(quickStartLegacy.title === 'Quick Start', 'should resolve to correct title');
